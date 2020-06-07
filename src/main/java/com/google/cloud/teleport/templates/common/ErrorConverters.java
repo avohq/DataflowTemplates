@@ -190,7 +190,7 @@ public class ErrorConverters {
                   .withJsonSchema(getErrorRecordsTableSchema())
                   .withCreateDisposition(CreateDisposition.CREATE_IF_NEEDED)
                   .withWriteDisposition(WriteDisposition.WRITE_APPEND)
-                  .withFailedInsertRetryPolicy(InsertRetryPolicy.retryTransientErrors()));
+                  .withFailedInsertRetryPolicy(InsertRetryPolicy.neverRetry()));
       }
 
     /** Builder for {@link WritePubsubMessageErrors}. */
@@ -229,7 +229,7 @@ public class ErrorConverters {
                   .withJsonSchema(getErrorRecordsTableSchema())
                   .withCreateDisposition(CreateDisposition.CREATE_IF_NEEDED)
                   .withWriteDisposition(WriteDisposition.WRITE_APPEND)
-                  .withFailedInsertRetryPolicy(InsertRetryPolicy.retryTransientErrors()));
+                  .withFailedInsertRetryPolicy(InsertRetryPolicy.neverRetry()));
       }
 
     /** Builder for {@link WriteStringMessageErrors}. */
