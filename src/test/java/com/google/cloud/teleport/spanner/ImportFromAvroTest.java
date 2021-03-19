@@ -16,6 +16,12 @@
 
 package com.google.cloud.teleport.spanner;
 
+import static org.hamcrest.Matchers.is;
+import static org.junit.Assert.assertThat;
+
+import com.google.cloud.spanner.ReadOnlyTransaction;
+import com.google.cloud.teleport.spanner.ddl.Ddl;
+import com.google.cloud.teleport.spanner.ddl.InformationSchemaScanner;
 import com.google.protobuf.util.JsonFormat;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
@@ -336,7 +342,8 @@ public class ImportFromAvroTest {
             .name("required_int").type(dateType).noDefault()
             .endRecord();
     String spannerSchema =
-        "CREATE TABLE `AvroTable` (" + "`id`                                    INT64 NOT NULL,"
+        "CREATE TABLE `AvroTable` ("
+            + "`id`                                    INT64 NOT NULL,"
             + "`optional_string`                       DATE,"
             + "`required_string`                       DATE NOT NULL,"
             + "`required_int`                          DATE NOT NULL,"
@@ -360,6 +367,33 @@ public class ImportFromAvroTest {
                 .build()));
   }
 
+  // TODO: enable this test once generated columns are supported.
+  // @Test
+  public void generatedColumns() throws Exception {
+    SchemaBuilder.RecordBuilder<Schema> record = SchemaBuilder.record("generatedColumns");
+    SchemaBuilder.FieldAssembler<Schema> fieldAssembler = record.fields();
+
+    fieldAssembler
+        // Primary key.
+        .requiredLong("id")
+        // Integer columns.
+        .optionalLong("optional_generated")
+        .requiredLong("required_generated");
+    Schema schema = fieldAssembler.endRecord();
+    String spannerSchema =
+        "CREATE TABLE `AvroTable` ("
+            + "`id`                                    INT64 NOT NULL,"
+            + "`optional_generated`                    INT64 AS (`id`) STORED,"
+            + "`required_generated`                    INT64 NOT NULL AS (`id`) STORED,"
+            + ") PRIMARY KEY (`id`)";
+
+    runTest(schema, spannerSchema, Arrays.asList(new GenericRecordBuilder(schema)
+        .set("id", 1L)
+        .set("optional_generated", 1L)
+        .set("required_generated", 1L)
+        .build()));
+  }
+
   private void runTest(Schema avroSchema, String spannerSchema, Iterable<GenericRecord> records)
       throws Exception {
     // Create the Avro file to be imported.
@@ -369,6 +403,11 @@ public class ImportFromAvroTest {
             ExportProtos.Export.Table.newBuilder()
             .setName("AvroTable")
             .addDataFiles(fileName)
+            .build())
+        .addDatabaseOptions(
+            ExportProtos.Export.DatabaseOption.newBuilder()
+            .setOptionName("version_retention_period")
+            .setOptionValue("\"4d\"")
             .build())
         .build();
     JsonFormat.printer().print(exportProto);
@@ -402,5 +441,14 @@ public class ImportFromAvroTest {
             ValueProvider.StaticValueProvider.of(true)));
     PipelineResult importResult = importPipeline.run();
     importResult.waitUntilFinish();
+
+    Ddl ddl;
+    try (ReadOnlyTransaction ctx = spannerServer.getDbClient(dbName).readOnlyTransaction()) {
+      ddl = new InformationSchemaScanner(ctx).scan();
+    }
+    assertThat(ddl.databaseOptions().size(), is(1));
+    ExportProtos.Export.DatabaseOption dbOption = ddl.databaseOptions().get(0);
+    assertThat(dbOption.getOptionName(), is("version_retention_period"));
+    assertThat(dbOption.getOptionValue(), is("4d"));
   }
 }

@@ -24,8 +24,12 @@ import com.google.cloud.bigquery.TableResult;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.HashSet;
 import java.util.Iterator;
+import java.util.Set;
 import java.util.UUID;
+import org.apache.beam.sdk.metrics.Counter;
+import org.apache.beam.sdk.metrics.Metrics;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.GroupByKey;
 import org.apache.beam.sdk.transforms.MapElements;
@@ -49,7 +53,7 @@ import org.slf4j.LoggerFactory;
  */
 public class BigQueryMerger extends PTransform<PCollection<MergeInfo>, PCollection<Void>> {
 
-  private static final Logger LOG = LoggerFactory.getLogger(BigQueryStatementIssuingFn.class);
+  private static final Logger LOG = LoggerFactory.getLogger(BigQueryMerger.class);
 
   private Duration windowDuration;
   private BigQuery testBigQueryClient;
@@ -65,22 +69,37 @@ public class BigQueryMerger extends PTransform<PCollection<MergeInfo>, PCollecti
   @Override
   public PCollection<Void> expand(PCollection<MergeInfo> input) {
     final MergeStatementBuilder mergeBuilder = new MergeStatementBuilder(mergeConfiguration);
-    return input
+    PCollection<MergeInfo> mergeInfoRecords = input
         .apply(
             MapElements.into(
                 TypeDescriptors.kvs(
                     TypeDescriptors.strings(), TypeDescriptor.of(MergeInfo.class)))
                 .via(mergeInfo -> KV.of(mergeInfo.getReplicaTable(), mergeInfo)))
         .apply(new TriggerPerKeyOnFixedIntervals<String, MergeInfo>(windowDuration))
-        .apply(Values.create())
+        .apply(Values.create());
+
+    return expandExecuteMerge(mergeInfoRecords, mergeConfiguration, testBigQueryClient);
+  }
+
+  /**
+   * The extended expand function which builds and executes Merge queries.
+   */
+  public static PCollection<Void> expandExecuteMerge(
+        PCollection<MergeInfo> input,
+        MergeConfiguration mergeConfiguration,
+        BigQuery bigQueryClient) {
+    final MergeStatementBuilder mergeBuilder = new MergeStatementBuilder(mergeConfiguration);
+    return input
         .apply(MapElements.into(TypeDescriptors.strings()).via(mergeInfo -> {
           return mergeBuilder.buildMergeStatement(
               mergeInfo.getReplicaTable(),
               mergeInfo.getStagingTable(),
               mergeInfo.getAllPkFields(),
+              mergeInfo.getOrderByFields(),
+              mergeInfo.getDeleteField(),
               mergeInfo.getAllFields());
         }))
-        .apply(ParDo.of(new BigQueryStatementIssuingFn(this.testBigQueryClient)))
+        .apply(ParDo.of(new BigQueryStatementIssuingFn(bigQueryClient)))
         .apply(
             MapElements.into(TypeDescriptors.voids())
                 .via(
@@ -98,7 +117,7 @@ public class BigQueryMerger extends PTransform<PCollection<MergeInfo>, PCollecti
 
     private Duration intervalDuration;
 
-    TriggerPerKeyOnFixedIntervals(Duration intervalDuration) {
+    public TriggerPerKeyOnFixedIntervals(Duration intervalDuration) {
       this.intervalDuration = intervalDuration;
     }
 
@@ -111,8 +130,9 @@ public class BigQueryMerger extends PTransform<PCollection<MergeInfo>, PCollecti
                   .triggering(
                       Repeatedly.forever(
                           AfterProcessingTime.pastFirstElementInPane()
-                              .plusDelayOf(Duration.ZERO)
-                              .alignedTo(intervalDuration, org.joda.time.Instant.now()))))
+                              .alignedTo(intervalDuration, org.joda.time.Instant.now())
+                              .plusDelayOf(intervalDuration))))
+          .apply(ParDo.of(new FilterPerGroupValues<K, V>()))
           .apply(GroupByKey.create())
           .apply(
               ParDo.of(
@@ -128,18 +148,45 @@ public class BigQueryMerger extends PTransform<PCollection<MergeInfo>, PCollecti
                     }
                   }));
     }
+
+    private static class FilterPerGroupValues<K, V> extends DoFn<KV<K, V>, KV<K, V>> {
+      private Set<K> keysProcessed;
+
+      @Setup
+      public void setUp() {
+        if (keysProcessed == null) {
+          keysProcessed = new HashSet<K>();
+        }
+      }
+
+      @ProcessElement
+      public void process(ProcessContext c) {
+        K key = c.element().getKey();
+        if (!keysProcessed.contains(key)) {
+          c.output(c.element());
+          keysProcessed.add(key);
+        }
+      }
+
+      @FinishBundle
+      public void cleanKeysProcessed(FinishBundleContext c) {
+        keysProcessed.clear();
+      }
+
+    }
   }
 
   /**
    * Class {@link BigQueryStatementIssuingFn}.
    */
-  public class BigQueryStatementIssuingFn extends DoFn<String, Void> {
+  public static class BigQueryStatementIssuingFn extends DoFn<String, Void> {
 
     public static final String JOB_ID_PREFIX = "bigstream_to_bq";
+    private final Counter mergesIssued = Metrics.counter(BigQueryMerger.class, "mergesIssued");
 
     private BigQuery bigQueryClient;
 
-    BigQueryStatementIssuingFn(BigQuery bigQueryClient) {
+    public BigQueryStatementIssuingFn(BigQuery bigQueryClient) {
       this.bigQueryClient = bigQueryClient;
     }
 
@@ -158,10 +205,16 @@ public class BigQueryMerger extends PTransform<PCollection<MergeInfo>, PCollecti
     @ProcessElement
     public void process(ProcessContext c) throws InterruptedException {
       String statement = c.element();
-      Job jobInfo = issueQueryToBQ(statement);
-      LOG.info("Job Info for triggered job: {}", jobInfo);
-      jobInfo = jobInfo.waitFor();
-      LOG.info("Job Info for finalized job: {}", jobInfo);
+      try { 
+        Job jobInfo = issueQueryToBQ(statement);
+        LOG.info("Job Info for triggered job: {}", jobInfo);
+        jobInfo = jobInfo.waitFor();
+        mergesIssued.inc();
+        LOG.info("Job Info for finalized job: {}", jobInfo);
+      } catch (Exception e) {
+        LOG.error("Merge Job Failed: Exception: {} Statement: {}",
+          e.toString(), statement);
+      }
     }
 
     private Job issueQueryToBQ(String statement) throws InterruptedException {

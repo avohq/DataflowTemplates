@@ -1,7 +1,7 @@
 # PubSub CDC to BigQuery Dataflow Template
 
-The [PubSubCdcToBigQuery](src/main/java/com/google/cloud/teleport/v2/templates/PubSubCdcToBigQuery.java) pipeline 
-ingests data from a PubSub subscription, optionally applies a Javascript or Python UDF if supplied 
+The [PubSubCdcToBigQuery](src/main/java/com/google/cloud/teleport/v2/templates/PubSubCdcToBigQuery.java) pipeline
+ingests data from a PubSub subscription, optionally applies a JavaScript or Python UDF if supplied
 and writes the data to BigQuery.
 
 ## Getting Started
@@ -52,6 +52,7 @@ mvn clean package \
 #### Creating Image Spec
 
 * Create file in Cloud Storage with path to container image in Google Container Repository.
+
 ```sh
 echo '{
     "image":"'${TARGET_GCR_IMAGE}'",
@@ -109,7 +110,6 @@ echo '{
             "paramType":"TEXT",
             "isOptional":true
         },
-
         {
             "name":"maxNumWorkers","label":"Maximum number of workers Dataflow job will use",
             "helpText":"Maximum number of workers Dataflow job will use",
@@ -123,14 +123,26 @@ echo '{
             "isOptional":true
         },
         {
-            "name":"javascriptTextTransformGcsPath","label":"Javascript File Path",
+            "name":"javascriptTextTransformGcsPath","label":"JavaScript File Path",
             "helpText":"JS File Path",
             "paramType":"TEXT",
             "isOptional":true
         },
         {
-            "name":"javascriptTextTransformFunctionName","label":"UDF Javascript Function Name",
+            "name":"javascriptTextTransformFunctionName","label":"UDF JavaScript Function Name",
             "helpText":"JS Function Name",
+            "paramType":"TEXT",
+            "isOptional":true
+        },
+        {
+            "name":"pythonTextTransformGcsPath","label":"Python File Path",
+            "helpText":"PY File Path",
+            "paramType":"TEXT",
+            "isOptional":true
+        },
+        {
+            "name":"pythonTextTransformFunctionName","label":"UDF Python Function Name",
+            "helpText":"PY Function Name",
             "paramType":"TEXT",
             "isOptional":true
         }
@@ -144,6 +156,7 @@ rm image_spec.json
 ### Testing Template
 
 The template unit tests can be run using:
+
 ```sh
 mvn test
 ```
@@ -157,10 +170,14 @@ The template requires the following parameters:
 * outputDeadletterTable: Deadletter table for failed inserts in form: project-id:dataset.table
 
 The template has the following optional parameters:
-* javascriptTextTransformGcsPath: Gcs path to javascript udf source. Udf will be preferred option for transformation if supplied. Default: null
-* javascriptTextTransformFunctionName: UDF Javascript Function Name. Default: null
+* javascriptTextTransformGcsPath: Gcs path to JavaScript UDF source. Udf will be preferred option for transformation if supplied. Default: null
+* javascriptTextTransformFunctionName: UDF JavaScript Function Name. Default: null
+* pythonTextTransformGcsPath: Gcs path to Python UDF source. UDF will be preffered option for transformation if supplied. Default: null
+* pythonTextTransformFunctionName: UDF Python Function Name. Default: null
+* schemaFilePath: Gcs path to a file containing desired data types for BigQuery table creation. Default: null. Default: null
 
 Template can be executed using the following API call:
+
 ```sh
 export JOB_NAME="pubsub-cdc-to-bigquery-`date +%Y%m%d-%H%M%S-%N`"
 gcloud beta dataflow flex-template run ${JOB_NAME} \
@@ -171,3 +188,79 @@ gcloud beta dataflow flex-template run ${JOB_NAME} \
                      outputTableNameTemplate=${TABLE_TEMPLATE}, \
                      outputDeadletterTable=${DEADLETTER_TABLE}
 ```
+
+# Optional Settings
+
+  The template has two optional settings, **custom schemas** and **text transformer UDFs**.
+
+## Custom Schemas
+By default, the pipeline is designed to generate DDL in BigQuery if a table for a particular event does not currently exist. The tables generated default to STRING types for all columns but this can be overridden by loading a [BigQuery schema file](https://cloud.google.com/bigquery/docs/schemas) to GCS and providing the path via the **schemaFilePath** paramater on job creation. The pipeline will apply the custom datatype based on field name during table creation.
+
+## Text Transformer UDFs
+The template gives you the option to apply a UDF to the pipeline by sloading a script to GCS and providing the path and function name via the **{Language}TextTransformGcsPath** parameter on job creation. Currently JavaScript, and Python are supported. The function should expect to receive and return a JSON string. Example transformations are provided below.
+
+### JavaScript
+
+```
+/**
+ * A good transform function.
+ * @param {string} inJson
+ * @return {string} outJson
+ */
+function transform(inJson) {
+  var obj = JSON.parse(inJson);
+  obj.someProp = "someValue";
+  return JSON.stringify(obj);
+}
+```
+
+### Python
+
+```
+"""
+A good transform function.
+@param {string} inJson
+@return {string} outJson
+"""
+import json
+import sys
+
+def transform(event):
+  """ Return a Dict or List of Dict Objects.  Return None to discard
+      Input: JSON string
+      Output: Python Dictionary
+  """
+  event['someProp'] = 'someValue'
+  event = json.dumps(event)
+  return event
+
+# DO NOT EDIT BELOW THIS LINE
+# The remaining code is boilerplate required for
+# dynamic handling of event batches from the main
+# dataflow pipeline. the transform() function should
+# be the initial entrypoint for your custom logic.
+def _handle_result(result):
+  if isinstance(result, list):
+    for event in result:
+      if event:
+        print(json.dumps(event))
+  elif result:
+    print(json.dumps(result))
+
+if __name__ == '__main__':
+  # TODO: How do we handle the case where there are no messages
+  file_name = sys.argv[1]
+  with open(file_name, "r") as data_file:
+    for cnt, raw_data in enumerate(data_file):
+      raw_events = "[%s]" % raw_data
+
+      data = json.loads(raw_events)
+
+      if isinstance(data, list):
+        for event in data:
+          _handle_result(transform(event))
+      else:
+        event = data
+        _handle_result(transform(event))
+```
+

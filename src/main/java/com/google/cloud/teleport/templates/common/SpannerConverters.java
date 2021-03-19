@@ -20,6 +20,7 @@ import com.google.auto.value.AutoValue;
 import com.google.cloud.Date;
 import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.DatabaseClient;
+import com.google.cloud.spanner.PartitionOptions;
 import com.google.cloud.spanner.ReadContext;
 import com.google.cloud.spanner.ReadOnlyTransaction;
 import com.google.cloud.spanner.ResultSet;
@@ -38,7 +39,6 @@ import java.io.OutputStream;
 import java.io.StringWriter;
 import java.nio.channels.Channels;
 import java.nio.channels.WritableByteChannel;
-import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -48,6 +48,7 @@ import org.apache.beam.sdk.io.FileSystems;
 import org.apache.beam.sdk.io.gcp.spanner.ExposedSpannerAccessor;
 import org.apache.beam.sdk.io.gcp.spanner.ReadOperation;
 import org.apache.beam.sdk.io.gcp.spanner.SpannerConfig;
+import org.apache.beam.sdk.options.Default;
 import org.apache.beam.sdk.options.Description;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.ValueProvider;
@@ -93,6 +94,13 @@ public class SpannerConverters {
 
     @SuppressWarnings("unused")
     void setSpannerDatabaseId(ValueProvider<String> spannerDatabaseId);
+
+    @Description("Spanner host")
+    @Default.String("https://batch-spanner.googleapis.com")
+    ValueProvider<String> getSpannerHost();
+
+    @SuppressWarnings("unused")
+    void setSpannerHost(ValueProvider<String> value);
   }
 
   /** Factory for Export transform class. */
@@ -177,6 +185,11 @@ public class SpannerConverters {
     public class ExportFn extends DoFn<String, ReadOperation> {
 
       static final String SCHEMA_SUFFIX = "schema";
+      // The number of read partitions have to be capped so that in case the Partition token is
+      // large
+      // (which can happen with a table with a lot of columns), the PartitionResponse size is
+      // bounded.
+      private final int maxPartitions = 1000;
 
       @ProcessElement
       @SuppressWarnings("unused")
@@ -199,10 +212,31 @@ public class SpannerConverters {
           closeSpannerAccessor();
         }
 
-        processContext.output(
+        PartitionOptions partitionOptions =
+            PartitionOptions.newBuilder().setMaxPartitions(maxPartitions).build();
+
+        String columnsListAsString =
+            columns.entrySet().stream()
+                .map(x -> createColumnExpression(x.getKey(), x.getValue()))
+                .collect(Collectors.joining(","));
+        ReadOperation read =
             ReadOperation.create()
-                .withColumns(new ArrayList<>(columns.keySet()))
-                .withTable(table().get()));
+                .withQuery(String.format("SELECT %s FROM `%s`", columnsListAsString, table().get()))
+                .withPartitionOptions(partitionOptions);
+        processContext.output(read);
+      }
+
+      private String createColumnExpression(String columnName, String columnType) {
+        if (columnType.equals("NUMERIC")) {
+          return "CAST(" + columnName + " AS STRING) AS " + columnName;
+        }
+        if (columnType.equals("ARRAY<NUMERIC>")) {
+          return "(SELECT ARRAY_AGG(CAST(num AS STRING)) FROM UNNEST("
+              + columnName
+              + ") AS num) AS "
+              + columnName;
+        }
+        return columnName;
       }
 
       private void saveSchema(String content, String schemaPath) {
@@ -227,7 +261,9 @@ public class SpannerConverters {
           context.executeQuery(
               Statement.newBuilder(
                       "SELECT COLUMN_NAME, SPANNER_TYPE FROM INFORMATION_SCHEMA.COLUMNS "
-                          + "WHERE TABLE_NAME=@table_name ORDER BY ORDINAL_POSITION")
+                          + "WHERE TABLE_NAME=@table_name AND TABLE_CATALOG='' AND TABLE_SCHEMA='' "
+                          + "AND IS_GENERATED = 'NEVER' "
+                          + "ORDER BY ORDINAL_POSITION")
                   .bind("table_name")
                   .to(tableName)
                   .build());

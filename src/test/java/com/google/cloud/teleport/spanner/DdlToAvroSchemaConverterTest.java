@@ -22,11 +22,13 @@ import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.nullValue;
 import static org.junit.Assert.assertThat;
 
-import com.google.cloud.spanner.Type;
+import com.google.cloud.teleport.spanner.common.NumericUtils;
+import com.google.cloud.teleport.spanner.common.Type;
 import com.google.cloud.teleport.spanner.ddl.Ddl;
 import com.google.common.collect.ImmutableList;
 import java.util.Collection;
 import java.util.List;
+import org.apache.avro.LogicalTypes;
 import org.apache.avro.Schema;
 import org.junit.Test;
 
@@ -37,25 +39,30 @@ public class DdlToAvroSchemaConverterTest {
 
   @Test
   public void emptyDb() {
-    DdlToAvroSchemaConverter converter = new DdlToAvroSchemaConverter("spannertest", "booleans");
+    DdlToAvroSchemaConverter converter = new DdlToAvroSchemaConverter("spannertest",
+        "booleans", false);
     Ddl empty = Ddl.builder().build();
     assertThat(converter.convert(empty), empty());
   }
 
   @Test
   public void simple() {
-    DdlToAvroSchemaConverter converter = new DdlToAvroSchemaConverter("spannertest", "booleans");
+    DdlToAvroSchemaConverter converter = new DdlToAvroSchemaConverter("spannertest",
+        "booleans", false);
     Ddl ddl = Ddl.builder()
         .createTable("Users")
         .column("id").int64().notNull().endColumn()
         .column("first_name").string().size(10).endColumn()
         .column("last_name").type(Type.string()).max().endColumn()
+        .column("full_name").type(Type.string()).max()
+        .generatedAs("CONCAT(first_name, ' ', last_name)").stored().endColumn()
         .primaryKey().asc("id").desc("last_name").end()
         .indexes(ImmutableList.of("CREATE INDEX `UsersByFirstName` ON `Users` (`first_name`)"))
         .foreignKeys(
             ImmutableList.of(
                 "ALTER TABLE `Users` ADD CONSTRAINT `fk` FOREIGN KEY (`first_name`)"
                     + " REFERENCES `AllowedNames` (`first_name`)"))
+        .checkConstraints(ImmutableList.of("CONSTRAINT ck CHECK (`first_name` != `last_name`)"))
         .endTable()
         .build();
 
@@ -71,20 +78,37 @@ public class DdlToAvroSchemaConverterTest {
 
     List<Schema.Field> fields = avroSchema.getFields();
 
-    assertThat(fields, hasSize(3));
+    assertThat(fields, hasSize(4));
 
     assertThat(fields.get(0).name(), equalTo("id"));
     // Not null
     assertThat(fields.get(0).schema().getType(), equalTo(Schema.Type.LONG));
     assertThat(fields.get(0).getProp("sqlType"), equalTo("INT64"));
+    assertThat(fields.get(0).getProp("notNull"), equalTo(null));
+    assertThat(fields.get(0).getProp("generationExpression"), equalTo(null));
+    assertThat(fields.get(0).getProp("stored"), equalTo(null));
 
     assertThat(fields.get(1).name(), equalTo("first_name"));
     assertThat(fields.get(1).schema(), equalTo(nullableUnion(Schema.Type.STRING)));
     assertThat(fields.get(1).getProp("sqlType"), equalTo("STRING(10)"));
+    assertThat(fields.get(1).getProp("notNull"), equalTo(null));
+    assertThat(fields.get(1).getProp("generationExpression"), equalTo(null));
+    assertThat(fields.get(1).getProp("stored"), equalTo(null));
 
     assertThat(fields.get(2).name(), equalTo("last_name"));
     assertThat(fields.get(2).schema(), equalTo(nullableUnion(Schema.Type.STRING)));
     assertThat(fields.get(2).getProp("sqlType"), equalTo("STRING(MAX)"));
+    assertThat(fields.get(2).getProp("notNull"), equalTo(null));
+    assertThat(fields.get(2).getProp("generationExpression"), equalTo(null));
+    assertThat(fields.get(2).getProp("stored"), equalTo(null));
+
+    assertThat(fields.get(3).name(), equalTo("full_name"));
+    assertThat(fields.get(3).schema(), equalTo(Schema.create(Schema.Type.NULL)));
+    assertThat(fields.get(3).getProp("sqlType"), equalTo("STRING(MAX)"));
+    assertThat(fields.get(3).getProp("notNull"), equalTo("false"));
+    assertThat(fields.get(3).getProp("generationExpression"),
+        equalTo("CONCAT(first_name, ' ', last_name)"));
+    assertThat(fields.get(3).getProp("stored"), equalTo("true"));
 
     // spanner pk
     assertThat(avroSchema.getProp("spannerPrimaryKey_0"), equalTo("`id` ASC"));
@@ -100,34 +124,79 @@ public class DdlToAvroSchemaConverterTest {
         equalTo(
             "ALTER TABLE `Users` ADD CONSTRAINT `fk` FOREIGN KEY (`first_name`)"
                 + " REFERENCES `AllowedNames` (`first_name`)"));
+    assertThat(
+        avroSchema.getProp("spannerCheckConstraint_0"),
+        equalTo("CONSTRAINT ck CHECK (`first_name` != `last_name`)"));
 
     System.out.println(avroSchema.toString(true));
   }
 
   @Test
   public void allTypes() {
-    DdlToAvroSchemaConverter converter = new DdlToAvroSchemaConverter("spannertest", "booleans");
-    Ddl ddl = Ddl.builder()
-        .createTable("AllTYPES")
-        .column("bool_field").bool().endColumn()
-        .column("int64_field").int64().endColumn()
-        .column("float64_field").float64().endColumn()
-        .column("string_field").string().max().endColumn()
-        .column("bytes_field").bytes().max().endColumn()
-        .column("timestamp_field").timestamp().endColumn()
-        .column("date_field").date().endColumn()
-        .column("arr_bool_field").type(Type.array(Type.bool())).endColumn()
-        .column("arr_int64_field").type(Type.array(Type.int64())).endColumn()
-        .column("arr_float64_field").type(Type.array(Type.float64())).endColumn()
-        .column("arr_string_field").type(Type.array(Type.string())).max().endColumn()
-        .column("arr_bytes_field").type(Type.array(Type.bytes())).max().endColumn()
-        .column("arr_timestamp_field").type(Type.array(Type.timestamp())).endColumn()
-        .column("arr_date_field").type(Type.array(Type.date())).endColumn()
-        .primaryKey().asc("bool_field").end()
-        .interleaveInParent("ParentTable")
-        .onDeleteCascade()
-        .endTable()
-        .build();
+    DdlToAvroSchemaConverter converter = new DdlToAvroSchemaConverter("spannertest",
+        "booleans", false);
+    Ddl ddl =
+        Ddl.builder()
+            .createTable("AllTYPES")
+            .column("bool_field")
+            .bool()
+            .endColumn()
+            .column("int64_field")
+            .int64()
+            .endColumn()
+            .column("float64_field")
+            .float64()
+            .endColumn()
+            .column("string_field")
+            .string()
+            .max()
+            .endColumn()
+            .column("bytes_field")
+            .bytes()
+            .max()
+            .endColumn()
+            .column("timestamp_field")
+            .timestamp()
+            .endColumn()
+            .column("date_field")
+            .date()
+            .endColumn()
+            .column("numeric_field")
+            .numeric()
+            .endColumn()
+            .column("arr_bool_field")
+            .type(Type.array(Type.bool()))
+            .endColumn()
+            .column("arr_int64_field")
+            .type(Type.array(Type.int64()))
+            .endColumn()
+            .column("arr_float64_field")
+            .type(Type.array(Type.float64()))
+            .endColumn()
+            .column("arr_string_field")
+            .type(Type.array(Type.string()))
+            .max()
+            .endColumn()
+            .column("arr_bytes_field")
+            .type(Type.array(Type.bytes()))
+            .max()
+            .endColumn()
+            .column("arr_timestamp_field")
+            .type(Type.array(Type.timestamp()))
+            .endColumn()
+            .column("arr_date_field")
+            .type(Type.array(Type.date()))
+            .endColumn()
+            .column("arr_numeric_field")
+            .type(Type.array(Type.numeric()))
+            .endColumn()
+            .primaryKey()
+            .asc("bool_field")
+            .end()
+            .interleaveInParent("ParentTable")
+            .onDeleteCascade()
+            .endTable()
+            .build();
 
     Collection<Schema> result = converter.convert(ddl);
     assertThat(result, hasSize(1));
@@ -139,7 +208,7 @@ public class DdlToAvroSchemaConverterTest {
 
     List<Schema.Field> fields = avroSchema.getFields();
 
-    assertThat(fields, hasSize(14));
+    assertThat(fields, hasSize(16));
 
     assertThat(fields.get(0).name(), equalTo("bool_field"));
     assertThat(fields.get(0).schema(), equalTo(nullableUnion(Schema.Type.BOOLEAN)));
@@ -169,33 +238,41 @@ public class DdlToAvroSchemaConverterTest {
     assertThat(fields.get(6).schema(), equalTo(nullableUnion(Schema.Type.STRING)));
     assertThat(fields.get(6).getProp("sqlType"), equalTo("DATE"));
 
-    assertThat(fields.get(7).name(), equalTo("arr_bool_field"));
-    assertThat(fields.get(7).schema(), equalTo(nullableArray(Schema.Type.BOOLEAN)));
-    assertThat(fields.get(7).getProp("sqlType"), equalTo("ARRAY<BOOL>"));
+    assertThat(fields.get(7).name(), equalTo("numeric_field"));
+    assertThat(fields.get(7).schema(), equalTo(nullableNumericUnion()));
+    assertThat(fields.get(7).getProp("sqlType"), equalTo("NUMERIC"));
 
-    assertThat(fields.get(8).name(), equalTo("arr_int64_field"));
-    assertThat(fields.get(8).schema(), equalTo(nullableArray(Schema.Type.LONG)));
-    assertThat(fields.get(8).getProp("sqlType"), equalTo("ARRAY<INT64>"));
+    assertThat(fields.get(8).name(), equalTo("arr_bool_field"));
+    assertThat(fields.get(8).schema(), equalTo(nullableArray(Schema.Type.BOOLEAN)));
+    assertThat(fields.get(8).getProp("sqlType"), equalTo("ARRAY<BOOL>"));
 
-    assertThat(fields.get(9).name(), equalTo("arr_float64_field"));
-    assertThat(fields.get(9).schema(), equalTo(nullableArray(Schema.Type.DOUBLE)));
-    assertThat(fields.get(9).getProp("sqlType"), equalTo("ARRAY<FLOAT64>"));
+    assertThat(fields.get(9).name(), equalTo("arr_int64_field"));
+    assertThat(fields.get(9).schema(), equalTo(nullableArray(Schema.Type.LONG)));
+    assertThat(fields.get(9).getProp("sqlType"), equalTo("ARRAY<INT64>"));
 
-    assertThat(fields.get(10).name(), equalTo("arr_string_field"));
-    assertThat(fields.get(10).schema(), equalTo(nullableArray(Schema.Type.STRING)));
-    assertThat(fields.get(10).getProp("sqlType"), equalTo("ARRAY<STRING(MAX)>"));
+    assertThat(fields.get(10).name(), equalTo("arr_float64_field"));
+    assertThat(fields.get(10).schema(), equalTo(nullableArray(Schema.Type.DOUBLE)));
+    assertThat(fields.get(10).getProp("sqlType"), equalTo("ARRAY<FLOAT64>"));
 
-    assertThat(fields.get(11).name(), equalTo("arr_bytes_field"));
-    assertThat(fields.get(11).schema(), equalTo(nullableArray(Schema.Type.BYTES)));
-    assertThat(fields.get(11).getProp("sqlType"), equalTo("ARRAY<BYTES(MAX)>"));
+    assertThat(fields.get(11).name(), equalTo("arr_string_field"));
+    assertThat(fields.get(11).schema(), equalTo(nullableArray(Schema.Type.STRING)));
+    assertThat(fields.get(11).getProp("sqlType"), equalTo("ARRAY<STRING(MAX)>"));
 
-    assertThat(fields.get(12).name(), equalTo("arr_timestamp_field"));
-    assertThat(fields.get(12).schema(), equalTo(nullableArray(Schema.Type.STRING)));
-    assertThat(fields.get(12).getProp("sqlType"), equalTo("ARRAY<TIMESTAMP>"));
+    assertThat(fields.get(12).name(), equalTo("arr_bytes_field"));
+    assertThat(fields.get(12).schema(), equalTo(nullableArray(Schema.Type.BYTES)));
+    assertThat(fields.get(12).getProp("sqlType"), equalTo("ARRAY<BYTES(MAX)>"));
 
-    assertThat(fields.get(13).name(), equalTo("arr_date_field"));
+    assertThat(fields.get(13).name(), equalTo("arr_timestamp_field"));
     assertThat(fields.get(13).schema(), equalTo(nullableArray(Schema.Type.STRING)));
-    assertThat(fields.get(13).getProp("sqlType"), equalTo("ARRAY<DATE>"));
+    assertThat(fields.get(13).getProp("sqlType"), equalTo("ARRAY<TIMESTAMP>"));
+
+    assertThat(fields.get(14).name(), equalTo("arr_date_field"));
+    assertThat(fields.get(14).schema(), equalTo(nullableArray(Schema.Type.STRING)));
+    assertThat(fields.get(14).getProp("sqlType"), equalTo("ARRAY<DATE>"));
+
+    assertThat(fields.get(15).name(), equalTo("arr_numeric_field"));
+    assertThat(fields.get(15).schema(), equalTo(nullableNumericArray()));
+    assertThat(fields.get(15).getProp("sqlType"), equalTo("ARRAY<NUMERIC>"));
 
     assertThat(avroSchema.getProp("spannerPrimaryKey_0"), equalTo("`bool_field` ASC"));
     assertThat(avroSchema.getProp("spannerParent"), equalTo("ParentTable"));
@@ -204,12 +281,74 @@ public class DdlToAvroSchemaConverterTest {
     System.out.println(avroSchema.toString(true));
   }
 
+  @Test
+  public void timestampLogicalTypeTest() {
+    DdlToAvroSchemaConverter converter = new DdlToAvroSchemaConverter("spannertest", "booleans",
+        true);
+    Ddl ddl = Ddl.builder()
+        .createTable("Users")
+        .column("id").int64().notNull().endColumn()
+        .column("timestamp_field").timestamp().endColumn()
+        .primaryKey().asc("id").end()
+        .endTable()
+        .build();
+
+    Collection<Schema> result = converter.convert(ddl);
+    assertThat(result, hasSize(1));
+    Schema avroSchema = result.iterator().next();
+
+    assertThat(avroSchema.getNamespace(), equalTo("spannertest"));
+    assertThat(avroSchema.getProp("googleFormatVersion"), equalTo("booleans"));
+    assertThat(avroSchema.getProp("googleStorage"), equalTo("CloudSpanner"));
+
+    assertThat(avroSchema.getName(), equalTo("Users"));
+
+    List<Schema.Field> fields = avroSchema.getFields();
+
+    assertThat(fields, hasSize(2));
+
+    assertThat(fields.get(0).name(), equalTo("id"));
+    // Not null
+    assertThat(fields.get(0).schema().getType(), equalTo(Schema.Type.LONG));
+    assertThat(fields.get(0).getProp("sqlType"), equalTo("INT64"));
+    assertThat(fields.get(0).getProp("notNull"), equalTo(null));
+    assertThat(fields.get(0).getProp("generationExpression"), equalTo(null));
+    assertThat(fields.get(0).getProp("stored"), equalTo(null));
+
+    assertThat(fields.get(1).name(), equalTo("timestamp_field"));
+    assertThat(fields.get(1).schema(), equalTo(nullableTimestampUnion()));
+    assertThat(fields.get(1).getProp("sqlType"), equalTo("TIMESTAMP"));
+  }
+
   private Schema nullableUnion(Schema.Type s) {
     return Schema.createUnion(Schema.create(Schema.Type.NULL), Schema.create(s));
+  }
+
+  private Schema nullableNumericUnion() {
+    return Schema.createUnion(
+        Schema.create(Schema.Type.NULL),
+        LogicalTypes.decimal(NumericUtils.PRECISION, NumericUtils.SCALE)
+            .addToSchema(Schema.create(Schema.Type.BYTES)));
+  }
+
+  private Schema nullableTimestampUnion() {
+    return Schema.createUnion(
+        Schema.create(Schema.Type.NULL),
+        LogicalTypes.timestampMicros().addToSchema(Schema.create(Schema.Type.LONG)));
   }
 
   private Schema nullableArray(Schema.Type s) {
     return Schema.createUnion(Schema.create(Schema.Type.NULL), Schema.createArray(
         Schema.createUnion(Schema.create(Schema.Type.NULL), Schema.create(s))));
+  }
+
+  private Schema nullableNumericArray() {
+    return Schema.createUnion(
+        Schema.create(Schema.Type.NULL),
+        Schema.createArray(
+            Schema.createUnion(
+                Schema.create(Schema.Type.NULL),
+                LogicalTypes.decimal(NumericUtils.PRECISION, NumericUtils.SCALE)
+                    .addToSchema(Schema.create(Schema.Type.BYTES)))));
   }
 }

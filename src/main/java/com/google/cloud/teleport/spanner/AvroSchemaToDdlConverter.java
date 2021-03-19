@@ -18,7 +18,8 @@ package com.google.cloud.teleport.spanner;
 
 import static com.google.cloud.teleport.spanner.AvroUtil.unpackNullable;
 
-import com.google.cloud.spanner.Type;
+import com.google.cloud.teleport.spanner.common.NumericUtils;
+import com.google.cloud.teleport.spanner.common.Type;
 import com.google.cloud.teleport.spanner.ddl.Column;
 import com.google.cloud.teleport.spanner.ddl.Ddl;
 import com.google.cloud.teleport.spanner.ddl.Table;
@@ -52,21 +53,45 @@ public class AvroSchemaToDdlConverter {
     Table.Builder table = Table.builder();
     table.name(tableName);
     for (Schema.Field f : schema.getFields()) {
+      Column.Builder column = table.column(f.name());
       String sqlType = f.getProp("sqlType");
-      boolean nullable = false;
-      Schema avroType = f.schema();
-      if (avroType.getType() == Schema.Type.UNION) {
-        Schema unpacked = unpackNullable(avroType);
-        nullable = unpacked != null;
-        if (nullable) {
-          avroType = unpacked;
+      String expression = f.getProp("generationExpression");
+      if (expression != null) {
+        // This is a generated column.
+        if (Strings.isNullOrEmpty(sqlType)) {
+          throw new IllegalArgumentException(
+              "Property sqlType is missing for generated column " + f.name());
         }
+        String notNull = f.getProp("notNull");
+        if (notNull == null) {
+          throw new IllegalArgumentException(
+              "Property notNull is missing for generated column " + f.name());
+        }
+        column.parseType(sqlType).notNull(Boolean.parseBoolean(notNull)).generatedAs(expression);
+        String stored = f.getProp("stored");
+        if (stored == null) {
+          throw new IllegalArgumentException(
+              "Property stored is missing for generated column " + f.name());
+        }
+        if (Boolean.parseBoolean(stored)) {
+          column.stored();
+        }
+      } else {
+        boolean nullable = false;
+        Schema avroType = f.schema();
+        if (avroType.getType() == Schema.Type.UNION) {
+          Schema unpacked = unpackNullable(avroType);
+          nullable = unpacked != null;
+          if (nullable) {
+            avroType = unpacked;
+          }
+        }
+        if (Strings.isNullOrEmpty(sqlType)) {
+          Type spannerType = inferType(avroType, true);
+          sqlType = toString(spannerType, true);
+        }
+        column.parseType(sqlType).notNull(!nullable);
       }
-      if (Strings.isNullOrEmpty(sqlType)) {
-        Type spannerType = inferType(avroType, true);
-        sqlType = toString(spannerType, true);
-      }
-      Column.Builder column = table.column(f.name()).parseType(sqlType).notNull(!nullable);
       ImmutableList.Builder<String> columnOptions = ImmutableList.builder();
       for (int i = 0; ; i++) {
         String spannerOption = f.getProp("spannerOption_" + i);
@@ -95,25 +120,11 @@ public class AvroSchemaToDdlConverter {
       }
     }
 
-    ImmutableList.Builder<String> indexes = ImmutableList.builder();
-    for (int i = 0; ; i++) {
-      String spannerIndex = schema.getProp("spannerIndex_" + i);
-      if (spannerIndex == null) {
-        break;
-      }
-      indexes.add(spannerIndex);
-    }
-    table.indexes(indexes.build());
+    table.indexes(getNumberedPropsWithPrefix(schema, "spannerIndex_"));
 
-    ImmutableList.Builder<String> foreignKeys = ImmutableList.builder();
-    for (int i = 0; ; i++) {
-      String spannerForeignKey = schema.getProp("spannerForeignKey_" + i);
-      if (spannerForeignKey == null) {
-        break;
-      }
-      foreignKeys.add(spannerForeignKey);
-    }
-    table.foreignKeys(foreignKeys.build());
+    table.foreignKeys(getNumberedPropsWithPrefix(schema, "spannerForeignKey_"));
+
+    table.checkConstraints(getNumberedPropsWithPrefix(schema, "spannerCheckConstraint_"));
 
     // Table parent options.
     String spannerParent = schema.getProp("spannerParent");
@@ -146,30 +157,45 @@ public class AvroSchemaToDdlConverter {
     return name;
   }
 
-  private com.google.cloud.spanner.Type inferType(Schema f, boolean supportArrays) {
+  private static ImmutableList<String> getNumberedPropsWithPrefix(Schema schema, String prefix) {
+    ImmutableList.Builder<String> props = ImmutableList.builder();
+    for (int i = 0; ; i++) {
+      String prop = schema.getProp(prefix + i);
+      if (prop == null) {
+        break;
+      }
+      props.add(prop);
+    }
+    return props.build();
+  }
+
+  private com.google.cloud.teleport.spanner.common.Type inferType(Schema f, boolean supportArrays) {
     Schema.Type type = f.getType();
     LogicalType logicalType = LogicalTypes.fromSchema(f);
 
     switch (type) {
       case BOOLEAN:
-        return Type.bool();
+        return com.google.cloud.teleport.spanner.common.Type.bool();
       case INT:
-        return com.google.cloud.spanner.Type.int64();
+        return com.google.cloud.teleport.spanner.common.Type.int64();
       case LONG:
         if (LogicalTypes.timestampMillis().equals(logicalType)) {
-          return com.google.cloud.spanner.Type.timestamp();
+          return com.google.cloud.teleport.spanner.common.Type.timestamp();
         }
         if (LogicalTypes.timestampMicros().equals(logicalType)) {
-          return com.google.cloud.spanner.Type.timestamp();
+          return com.google.cloud.teleport.spanner.common.Type.timestamp();
         }
-        return com.google.cloud.spanner.Type.int64();
+        return com.google.cloud.teleport.spanner.common.Type.int64();
       case FLOAT:
       case DOUBLE:
-        return com.google.cloud.spanner.Type.float64();
+        return com.google.cloud.teleport.spanner.common.Type.float64();
       case STRING:
-        return com.google.cloud.spanner.Type.string();
+        return com.google.cloud.teleport.spanner.common.Type.string();
       case BYTES:
-        return com.google.cloud.spanner.Type.bytes();
+        if (LogicalTypes.decimal(NumericUtils.PRECISION, NumericUtils.SCALE).equals(logicalType)) {
+          return com.google.cloud.teleport.spanner.common.Type.numeric();
+        }
+        return com.google.cloud.teleport.spanner.common.Type.bytes();
       case ARRAY:
         {
           if (supportArrays) {
@@ -182,7 +208,7 @@ public class AvroSchemaToDdlConverter {
               element = unpacked;
             }
             try {
-              return com.google.cloud.spanner.Type.array(inferType(element, false));
+              return com.google.cloud.teleport.spanner.common.Type.array(inferType(element, false));
             } catch (IllegalArgumentException e) {
               throw new IllegalArgumentException("Cannot infer array type for field " + f);
             }
@@ -194,7 +220,8 @@ public class AvroSchemaToDdlConverter {
     throw new IllegalArgumentException("Cannot infer a type " + f);
   }
 
-  private String toString(com.google.cloud.spanner.Type spannerType, boolean supportArray) {
+  private String toString(
+      com.google.cloud.teleport.spanner.common.Type spannerType, boolean supportArray) {
     switch (spannerType.getCode()) {
       case BOOL:
         return "BOOL";
@@ -210,10 +237,13 @@ public class AvroSchemaToDdlConverter {
         return "TIMESTAMP";
       case DATE:
         return "DATE";
+      case NUMERIC:
+        return "NUMERIC";
       case ARRAY:
         {
           if (supportArray) {
-            Type element = spannerType.getArrayElementType();
+            com.google.cloud.teleport.spanner.common.Type element =
+                spannerType.getArrayElementType();
             String elementStr = toString(element, false);
             return "ARRAY<" + elementStr + ">";
           }

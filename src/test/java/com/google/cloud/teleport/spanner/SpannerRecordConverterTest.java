@@ -24,10 +24,15 @@ import com.google.cloud.ByteArray;
 import com.google.cloud.Date;
 import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.Struct;
-import com.google.cloud.spanner.Type;
+import com.google.cloud.teleport.spanner.common.NumericUtils;
+import com.google.cloud.teleport.spanner.common.Type;
 import com.google.cloud.teleport.spanner.ddl.Ddl;
 import com.google.common.collect.Lists;
+import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 import org.junit.Test;
@@ -38,7 +43,10 @@ import org.junit.Test;
 public class SpannerRecordConverterTest {
 
   private DdlToAvroSchemaConverter converter =
-      new DdlToAvroSchemaConverter("booleans", "booleans");
+      new DdlToAvroSchemaConverter("booleans", "booleans", false);
+
+  private DdlToAvroSchemaConverter logicalTypeConverter =
+      new DdlToAvroSchemaConverter("booleans", "booleans", true);
 
   @Test
   public void simple() {
@@ -125,6 +133,42 @@ public class SpannerRecordConverterTest {
   }
 
   @Test
+  public void timestampLogical() {
+    Ddl ddl = Ddl.builder()
+        .createTable("users")
+        .column("id").int64().notNull().endColumn()
+        .column("date").date().endColumn()
+        .column("ts").timestamp().endColumn()
+        .column("ts_array").type(Type.array(Type.timestamp())).endColumn()
+        .primaryKey().asc("id").end()
+        .endTable()
+        .build();
+    Schema schema = logicalTypeConverter.convert(ddl).iterator().next();
+    SpannerRecordConverter recordConverter = new SpannerRecordConverter(schema);
+    Struct struct = Struct.newBuilder()
+        .set("id").to(1L)
+        .set("date").to(Date.fromYearMonthDay(2018, 2, 2))
+        .set("ts").to(Timestamp.ofTimeMicroseconds(10))
+        .set("ts_array").toTimestampArray(
+            Lists.newArrayList(null, null,
+                Timestamp.ofTimeMicroseconds(10L),
+                Timestamp.ofTimeSecondsAndNanos(10000, 100000),
+                Timestamp.parseTimestamp("1970-01-01T00:00:00Z"),
+                Timestamp.MIN_VALUE,
+                Timestamp.MAX_VALUE))
+        .build();
+
+    GenericRecord avroRecord = recordConverter.convert(struct);
+
+    assertThat(avroRecord.get("id"), equalTo(1L));
+    assertThat(avroRecord.get("date"), equalTo("2018-02-02"));
+    assertThat(avroRecord.get("ts"), equalTo(10L));
+    assertThat(avroRecord.get("ts_array"),
+        equalTo(Arrays.asList(null, null, 10L, 10000000100L, 0L,
+                    -62135596800000000L, 253402300799999999L)));
+  }
+
+  @Test
   public void arrays() {
     Ddl ddl = Ddl.builder()
         .createTable("users")
@@ -158,4 +202,50 @@ public class SpannerRecordConverterTest {
         equalTo(Arrays.asList(null, null, "1970-01-01T00:00:00.000010000Z")));
   }
 
+  @Test
+  public void numerics() {
+    Ddl ddl =
+        Ddl.builder()
+            .createTable("numerictable")
+            .column("id")
+            .int64()
+            .notNull()
+            .endColumn()
+            .column("numeric")
+            .type(Type.numeric())
+            .endColumn()
+            .column("numeric_arr")
+            .type(Type.array(Type.numeric()))
+            .endColumn()
+            .primaryKey()
+            .asc("id")
+            .end()
+            .endTable()
+            .build();
+    Schema schema = converter.convert(ddl).iterator().next();
+    SpannerRecordConverter recordConverter = new SpannerRecordConverter(schema);
+
+    String[] numericArrValues = {null, "-25398514232141142.012479", null, "1999999999.1246"};
+    Struct struct =
+        Struct.newBuilder()
+            .set("id")
+            .to(1L)
+            .set("numeric")
+            .to("-9305028.140032")
+            .set("numeric_arr")
+            .toStringArray(Lists.newArrayList(numericArrValues))
+            .build();
+
+    GenericRecord avroRecord = recordConverter.convert(struct);
+    List<ByteBuffer> expectedNumericArr =
+        Stream.of(numericArrValues)
+            .map(x -> x == null ? null : ByteBuffer.wrap(NumericUtils.stringToBytes(x)))
+            .collect(Collectors.toList());
+
+    assertThat(avroRecord.get("id"), equalTo(1L));
+    assertThat(
+        avroRecord.get("numeric"),
+        equalTo(ByteBuffer.wrap(NumericUtils.stringToBytes("-9305028.140032"))));
+    assertThat(avroRecord.get("numeric_arr"), equalTo(expectedNumericArr));
+  }
 }

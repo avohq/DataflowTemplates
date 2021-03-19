@@ -17,6 +17,7 @@
 package com.google.cloud.teleport.spanner;
 
 import com.google.cloud.spanner.PartitionOptions;
+import com.google.cloud.teleport.spanner.ddl.Column;
 import com.google.cloud.teleport.spanner.ddl.Ddl;
 import com.google.cloud.teleport.spanner.ddl.Table;
 import java.util.stream.Collectors;
@@ -47,7 +48,8 @@ class BuildReadFromTableOperations
                 for (Table table : ddl.allTables()) {
                   String columnsListAsString =
                       table.columns().stream()
-                          .map(x -> "t.`" + x.name() + "`")
+                          .filter(x -> !x.isGenerated())
+                          .map(x -> createColumnExpression(x))
                           .collect(Collectors.joining(","));
 
                   PartitionOptions partitionOptions =
@@ -66,5 +68,20 @@ class BuildReadFromTableOperations
                 }
               }
             }));
+  }
+
+  private String createColumnExpression(Column col) {
+    if (col.typeString().equals("NUMERIC")) {
+      return "CAST(" + "t.`" + col.name() + "`" + " AS STRING) AS " + col.name();
+    }
+    if (col.typeString().equals("ARRAY<NUMERIC>")) {
+      return "(SELECT ARRAY_AGG(CAST(num AS STRING)) FROM UNNEST("
+          + "t.`"
+          + col.name()
+          + "`"
+          + ") AS num) AS "
+          + col.name();
+    }
+    return "t.`" + col.name() + "`";
   }
 }

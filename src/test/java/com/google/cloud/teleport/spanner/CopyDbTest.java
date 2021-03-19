@@ -16,20 +16,24 @@
 
 package com.google.cloud.teleport.spanner;
 
-import static org.hamcrest.text.IsEqualIgnoringWhiteSpace.equalToIgnoringWhiteSpace;
+import static org.hamcrest.Matchers.is;
+import static org.hamcrest.text.IsEqualCompressingWhiteSpace.equalToCompressingWhiteSpace;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThat;
 
 import com.google.cloud.spanner.DatabaseClient;
 import com.google.cloud.spanner.ReadOnlyTransaction;
-import com.google.cloud.spanner.Type;
+import com.google.cloud.teleport.spanner.ExportProtos.Export;
+import com.google.cloud.teleport.spanner.common.Type;
 import com.google.cloud.teleport.spanner.ddl.Ddl;
 import com.google.cloud.teleport.spanner.ddl.InformationSchemaScanner;
 import com.google.cloud.teleport.spanner.ddl.RandomDdlGenerator;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import org.apache.beam.sdk.PipelineResult;
 import org.apache.beam.sdk.io.gcp.spanner.SpannerConfig;
 import org.apache.beam.sdk.options.ValueProvider;
@@ -208,6 +212,61 @@ public class CopyDbTest {
     runTest();
   }
 
+
+  @Test
+  public void databaseOptions() throws Exception {
+    Ddl.Builder ddlBuilder = Ddl.builder();
+    // Table Content
+    ddlBuilder.createTable("Users")
+                .column("first_name").string().max().endColumn()
+                .column("last_name").string().size(5).endColumn()
+                .column("age").int64().endColumn()
+                .primaryKey().asc("first_name").desc("last_name").end()
+              .endTable()
+              .createTable("EmploymentData")
+                .column("first_name").string().max().endColumn()
+                .column("last_name").string().size(5).endColumn()
+                .column("id").int64().notNull().endColumn()
+                .column("age").int64().endColumn()
+                .column("address").string().max().endColumn()
+                .primaryKey().asc("first_name").desc("last_name").asc("id").end()
+                .interleaveInParent("Users")
+                .onDeleteCascade()
+              .endTable();
+    // Allowed and well-formed database option
+    List<Export.DatabaseOption> dbOptionList = new ArrayList<>();
+    dbOptionList.add(
+        Export.DatabaseOption.newBuilder()
+            .setOptionName("version_retention_period")
+            .setOptionValue("\"6d\"")
+            .build());
+    // Disallowed database option
+    dbOptionList.add(
+        Export.DatabaseOption.newBuilder()
+            .setOptionName("optimizer_version")
+            .setOptionValue("1")
+            .build());
+    // Misformed database option
+    dbOptionList.add(
+        Export.DatabaseOption.newBuilder()
+            .setOptionName("123version")
+            .setOptionValue("xyz")
+            .build());
+    ddlBuilder.mergeDatabaseOptions(dbOptionList);
+    Ddl ddl = ddlBuilder.build();
+    createAndPopulate(ddl, 100);
+    runTest();
+    Ddl destinationDdl = readDdl(destinationDb);
+    List<String> destDbOptions = destinationDdl.setOptionsStatements(destinationDb);
+    assertThat(destDbOptions.size(), is(1));
+    assertThat(
+        destDbOptions.get(0),
+        is(
+            "ALTER DATABASE `"
+                + destinationDb
+                + "` SET OPTIONS ( version_retention_period = \"6d\" )"));
+  }
+
   @Test
   public void emptyDb() throws Exception {
     Ddl ddl = Ddl.builder().build();
@@ -238,6 +297,22 @@ public class CopyDbTest {
                + "REFERENCES `Ref` (`id2`, `id1`)"))
         .endTable()
         .build();
+
+    createAndPopulate(ddl, 100);
+    runTest();
+  }
+
+  // TODO: enable this test once CHECK constraints are enabled
+  // @Test
+  public void checkConstraints() throws Exception {
+    Ddl ddl = Ddl.builder()
+        .createTable("T")
+        .column("id").int64().endColumn()
+        .column("A").int64().endColumn()
+        .primaryKey().asc("id").end()
+        .checkConstraints(ImmutableList.of(
+           "CONSTRAINT `ck` CHECK(TO_HEX(SHA1(CAST(A AS STRING))) <= '~')"))
+        .endTable().build();
 
     createAndPopulate(ddl, 100);
     runTest();
@@ -295,7 +370,7 @@ public class CopyDbTest {
     Ddl sourceDdl = readDdl(sourceDb);
     Ddl destinationDdl = readDdl(destinationDb);
 
-    assertThat(sourceDdl.prettyPrint(), equalToIgnoringWhiteSpace(destinationDdl.prettyPrint()));
+    assertThat(sourceDdl.prettyPrint(), equalToCompressingWhiteSpace(destinationDdl.prettyPrint()));
   }
 
   private Ddl readDdl(String db) {

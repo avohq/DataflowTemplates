@@ -21,14 +21,19 @@ import static org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Prec
 import com.google.api.client.json.JsonFactory;
 import com.google.api.services.bigquery.model.TableRow;
 import com.google.auto.value.AutoValue;
+import com.google.cloud.bigquery.Field;
+import com.google.cloud.bigquery.LegacySQLTypeName;
 import com.google.cloud.teleport.v2.transforms.JavascriptTextTransformer.JavascriptTextTransformerOptions;
 import com.google.cloud.teleport.v2.utils.SerializableSchemaSupplier;
 import com.google.cloud.teleport.v2.values.FailsafeElement;
 import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -99,7 +104,8 @@ public class BigQueryConverters {
   }
 
   /**
-   * The {@link TableRowToJsonFn} class converts a tableRow to Json using {@link #tableRowToJson(TableRow)}.
+   * The {@link TableRowToJsonFn} class converts a tableRow to Json using {@link
+   * #tableRowToJson(TableRow)}.
    */
   public static class TableRowToJsonFn extends DoFn<TableRow, String> {
 
@@ -111,7 +117,9 @@ public class BigQueryConverters {
   }
 
   /** Converts a {@link TableRow} into a Json string using {@link Gson}. */
-  private static String tableRowToJson(TableRow row) { return new Gson().toJson(row, TableRow.class); }
+  private static String tableRowToJson(TableRow row) {
+    return new Gson().toJson(row, TableRow.class);
+  }
 
   /**
    * The {@link BigQueryReadOptions} interface contains option necessary to interface with BigQuery.
@@ -277,19 +285,19 @@ public class BigQueryConverters {
   }
 
   /**
-   * The {@link TableRowToFailsafeJsonDocument} class is a {@link PTransform} which transforms {@link
-   * TableRow} objects into Json documents for insertion into Elasticsearch. Optionally a javascript
-   * UDF can be supplied to parse the {@link TableRow} object. The executions of the UDF and
-   * transformation to {@link TableRow} objects is done in a fail-safe way by wrapping the element
-   * with it's original payload inside the {@link FailsafeElement} class. The {@link
-   * TableRowToFailsafeJsonDocument} transform will output a {@link PCollectionTuple} which contains all
-   * output and dead-letter {@link PCollection}.
+   * The {@link TableRowToFailsafeJsonDocument} class is a {@link PTransform} which transforms
+   * {@link TableRow} objects into Json documents for insertion into Elasticsearch. Optionally a
+   * javascript UDF can be supplied to parse the {@link TableRow} object. The executions of the UDF
+   * and transformation to {@link TableRow} objects is done in a fail-safe way by wrapping the
+   * element with it's original payload inside the {@link FailsafeElement} class. The {@link
+   * TableRowToFailsafeJsonDocument} transform will output a {@link PCollectionTuple} which contains
+   * all output and dead-letter {@link PCollection}.
    *
    * <p>The {@link PCollectionTuple} output will contain the following {@link PCollection}:
    *
    * <ul>
-   *   <li>{@link TableRowToFailsafeJsonDocument#transformOutTag()} - Contains all records successfully
-   *       converted from JSON to {@link TableRow} objects.
+   *   <li>{@link TableRowToFailsafeJsonDocument#transformOutTag()} - Contains all records
+   *       successfully converted from JSON to {@link TableRow} objects.
    *   <li>{@link TableRowToFailsafeJsonDocument#transformDeadletterOutTag()} - Contains all {@link
    *       FailsafeElement} records which couldn't be converted to table rows.
    * </ul>
@@ -468,8 +476,8 @@ public class BigQueryConverters {
       // Put all column/value pairs into key/value map
       Set<String> rowKeys = row.keySet();
       for (String rowKey : rowKeys) {
-        // Only String types can be used in comparison
-        if(row.get(rowKey) instanceof String) {
+      // Only String types can be used in comparison
+      if (row.get(rowKey) instanceof String) {
           values.put(rowKey, (String) row.get(rowKey));
         }
       }
@@ -597,6 +605,125 @@ public class BigQueryConverters {
       return outputTableSpec + defaultDeadLetterTableSuffix;
     } else {
       return deadletterTable;
+    }
+  }
+
+  public static final Map<String, LegacySQLTypeName> BQ_TYPE_STRINGS = new HashMap<String, LegacySQLTypeName>() {{
+    put("BOOLEAN", LegacySQLTypeName.BOOLEAN);
+    put("BYTES", LegacySQLTypeName.BYTES);
+    put("DATE", LegacySQLTypeName.DATE);
+    put("DATETIME", LegacySQLTypeName.DATETIME);
+    put("FLOAT", LegacySQLTypeName.FLOAT);
+    put("INTEGER", LegacySQLTypeName.INTEGER);
+    put("NUMERIC", LegacySQLTypeName.NUMERIC);
+    put("RECORD", LegacySQLTypeName.RECORD);
+    put("STRING", LegacySQLTypeName.STRING);
+    put("TIME", LegacySQLTypeName.TIME);
+    put("TIMESTAMP", LegacySQLTypeName.TIMESTAMP);
+  }};
+
+  /**
+   * The {@link SchemaUtils} Class to easily convert from
+   * a json string to a BigQuery List<Field>.
+   */
+  public static class SchemaUtils {
+
+    private static final Type gsonSchemaType = new TypeToken<List<Map>>() { }.getType();
+
+    private static Field mapToField(Map fMap) {
+      String typeStr = fMap.get("type").toString();
+      String nameStr = fMap.get("name").toString();
+      String modeStr = fMap.get("mode").toString();
+      LegacySQLTypeName type = BQ_TYPE_STRINGS.get(typeStr);
+      if (type == null) {
+        type = LegacySQLTypeName.STRING;
+      }
+
+      return Field.newBuilder(nameStr, type).setMode(Field.Mode.valueOf(modeStr)).build();
+    }
+
+    private static List<Field> listToFields(List<Map> jsonFields) {
+      List<Field> fields = new ArrayList(jsonFields.size());
+      for (Map m : jsonFields) {
+        fields.add(mapToField(m));
+      }
+
+      return fields;
+    }
+
+    /**
+     * Return a {@code List<Field>} extracted from a json string.
+     *
+     * @param schemaStr JSON String with BigQuery schema fields.
+     */
+    public static List<Field> schemaFromString(String schemaStr) {
+      if (schemaStr == null) {
+        return null;
+      } else {
+        Gson gson = new Gson();
+        List<Map> jsonFields = gson.fromJson(schemaStr, gsonSchemaType);
+        return listToFields(jsonFields);
+      }
+    }
+  }
+
+  /**
+   * Converts a row to tableRow via {@link BigQueryUtils#toTableRow()}.
+   */
+  public static SerializableFunction<Row, TableRow> rowToTableRowFn = BigQueryUtils::toTableRow;
+
+  /**
+   * The {@link FailsafeRowToTableRow} transform converts {@link Row} to {@link TableRow} objects.
+   * The transform accepts a {@link FailsafeElement} object so the original payload of the incoming
+   * record can be maintained across multiple series of transforms.
+   */
+  @AutoValue
+  public abstract static class FailsafeRowToTableRow<T>
+          extends PTransform<PCollection<FailsafeElement<T, Row>>, PCollectionTuple> {
+
+    public static <T> Builder<T> newBuilder() {
+      return new AutoValue_BigQueryConverters_FailsafeRowToTableRow.Builder<>();
+    }
+
+    public abstract TupleTag<TableRow> successTag();
+
+    public abstract TupleTag<FailsafeElement<T, Row>> failureTag();
+
+    @Override
+    public PCollectionTuple expand(PCollection<FailsafeElement<T, Row>> failsafeElements) {
+      return failsafeElements.apply(
+              "FailsafeRowToTableRow",
+              ParDo.of(
+                      new DoFn<FailsafeElement<T, Row>, TableRow>() {
+                        @ProcessElement
+                        public void processElement(ProcessContext context) {
+                          FailsafeElement<T, Row> element = context.element();
+                          Row row = element.getPayload();
+
+                          try {
+                            TableRow tableRow = BigQueryUtils.toTableRow(row);
+                            context.output(tableRow);
+                          } catch (Exception e) {
+                            context.output(
+                                    failureTag(),
+                                    FailsafeElement.of(element)
+                                            .setErrorMessage(e.getMessage())
+                                            .setStacktrace(Throwables.getStackTraceAsString(e)));
+                          }
+                        }
+                      })
+                      .withOutputTags(successTag(), TupleTagList.of(failureTag())));
+    }
+
+    /** Builder for {@link FailsafeRowToTableRow}. */
+    @AutoValue.Builder
+    public abstract static class Builder<T> {
+
+      public abstract Builder<T> setSuccessTag(TupleTag<TableRow> successTag);
+
+      public abstract Builder<T> setFailureTag(TupleTag<FailsafeElement<T, Row>> failureTag);
+
+      public abstract FailsafeRowToTableRow<T> build();
     }
   }
 }

@@ -17,9 +17,9 @@
 package com.google.cloud.teleport.spanner;
 
 import com.google.cloud.spanner.Mutation;
-import com.google.cloud.spanner.Type.Code;
 import com.google.cloud.teleport.spanner.TextImportProtos.ImportManifest;
 import com.google.cloud.teleport.spanner.TextImportProtos.ImportManifest.TableManifest;
+import com.google.cloud.teleport.spanner.common.Type.Code;
 import com.google.cloud.teleport.spanner.ddl.Column;
 import com.google.cloud.teleport.spanner.ddl.Ddl;
 import com.google.cloud.teleport.spanner.ddl.Table;
@@ -50,8 +50,8 @@ import org.apache.beam.sdk.io.FileSystems;
 import org.apache.beam.sdk.io.fs.EmptyMatchTreatment;
 import org.apache.beam.sdk.io.fs.MatchResult;
 import org.apache.beam.sdk.io.fs.ResourceId;
+import org.apache.beam.sdk.io.gcp.spanner.LocalSpannerIO;
 import org.apache.beam.sdk.io.gcp.spanner.SpannerConfig;
-import org.apache.beam.sdk.io.gcp.spanner.SpannerIO;
 import org.apache.beam.sdk.io.gcp.spanner.SpannerWriteResult;
 import org.apache.beam.sdk.io.gcp.spanner.Transaction;
 import org.apache.beam.sdk.options.ValueProvider;
@@ -92,7 +92,7 @@ public class TextImportTransform extends PTransform<PBegin, PDone> {
   @Override
   public PDone expand(PBegin begin) {
     PCollectionView<Transaction> tx =
-        begin.apply(SpannerIO.createTransaction().withSpannerConfig(spannerConfig));
+        begin.apply(LocalSpannerIO.createTransaction().withSpannerConfig(spannerConfig));
 
     PCollection<Ddl> ddl =
         begin.apply("Read Information Schema", new ReadInformationSchema(spannerConfig, tx));
@@ -183,7 +183,9 @@ public class TextImportTransform extends PTransform<PBegin, PDone> {
           mutations
               .apply("Wait for previous depth " + depth, Wait.on(previousComputation))
               .apply(
-                  "Write mutations " + depth, SpannerIO.write().withSpannerConfig(spannerConfig)
+                  "Write mutations " + depth,
+                  LocalSpannerIO.write()
+                      .withSpannerConfig(spannerConfig)
                       .withCommitDeadline(Duration.standardMinutes(1))
                       .withMaxCumulativeBackoff(Duration.standardHours(2))
                       .withMaxNumMutations(10000)
@@ -416,6 +418,8 @@ public class TextImportTransform extends PTransform<PBegin, PDone> {
         return Code.TIMESTAMP;
       } else if (columnType.equalsIgnoreCase("BYTES")) {
         return Code.BYTES;
+      } else if (columnType.equalsIgnoreCase("NUMERIC")) {
+        return Code.NUMERIC;
       } else {
         throw new IllegalArgumentException(
             "Unrecognized or unsupported column data type: " + columnType);
@@ -431,12 +435,30 @@ public class TextImportTransform extends PTransform<PBegin, PDone> {
                 tableManifest.getTableName()));
       }
 
+      List<TableManifest.Column> manifestColumns = tableManifest.getColumnsList();
+      if (manifestColumns == null || manifestColumns.size() == 0) {
+        if (table.columns().stream().anyMatch(x -> x.isGenerated())) {
+          throw new RuntimeException(
+              String.format(
+                  "DB table %s has one or more generated columns. An explict column list that "
+                  + "excludes the generated columns must be provided in the manifest.",
+                  table.name()));
+        }
+      }
+
       for (TableManifest.Column manifiestColumn : tableManifest.getColumnsList()) {
         Column dbColumn = table.column(manifiestColumn.getColumnName());
         if (dbColumn == null) {
           throw new RuntimeException(
               String.format(
                   "Column %s in manifest does not exist in DB table %s.",
+                  manifiestColumn.getColumnName(), table.name()));
+        }
+        if (dbColumn.isGenerated()) {
+          throw new RuntimeException(
+              String.format(
+                  "Column %s in manifest is a generated column in DB table %s. "
+                  + "Generated columns cannot be imported.",
                   manifiestColumn.getColumnName(), table.name()));
         }
         if (parseSpannerDataType(manifiestColumn.getTypeName()) != dbColumn.type().getCode()) {

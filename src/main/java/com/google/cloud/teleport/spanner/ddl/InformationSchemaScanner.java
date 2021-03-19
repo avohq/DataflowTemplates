@@ -19,11 +19,10 @@ package com.google.cloud.teleport.spanner.ddl;
 import com.google.cloud.spanner.ReadContext;
 import com.google.cloud.spanner.ResultSet;
 import com.google.cloud.spanner.Statement;
+import com.google.cloud.teleport.spanner.ExportProtos.Export;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Maps;
-import com.google.common.escape.Escaper;
-import com.google.common.escape.Escapers;
 import java.util.Map;
 import java.util.NavigableMap;
 import org.apache.beam.sdk.values.KV;
@@ -34,13 +33,6 @@ import org.slf4j.LoggerFactory;
 public class InformationSchemaScanner {
 
   private static final Logger LOG = LoggerFactory.getLogger(InformationSchemaScanner.class);
-  private static final Escaper ESCAPER =
-      Escapers.builder()
-          .addEscape('"', "\\\"")
-          .addEscape('\\', "\\\\")
-          .addEscape('\r', "\\r")
-          .addEscape('\n', "\\n")
-          .build();
 
   private final ReadContext context;
 
@@ -50,6 +42,7 @@ public class InformationSchemaScanner {
 
   public Ddl scan() {
     Ddl.Builder builder = Ddl.builder();
+    listDatabaseOptions(builder);
     listTables(builder);
     listColumns(builder);
     listColumnOptions(builder);
@@ -81,7 +74,44 @@ public class InformationSchemaScanner {
       builder.createTable(tableName).foreignKeys(tableForeignKeys.build()).endTable();
     }
 
+    Map<String, NavigableMap<String, CheckConstraint>> checkConstraints = listCheckConstraints();
+    for (Map.Entry<String, NavigableMap<String, CheckConstraint>> tableEntry :
+        checkConstraints.entrySet()) {
+      String tableName = tableEntry.getKey();
+      ImmutableList.Builder<String> constraints = ImmutableList.builder();
+      for (Map.Entry<String, CheckConstraint> entry : tableEntry.getValue().entrySet()) {
+        constraints.add(entry.getValue().prettyPrint());
+      }
+      builder.createTable(tableName).checkConstraints(constraints.build()).endTable();
+    }
+
     return builder.build();
+  }
+
+  private void listDatabaseOptions(Ddl.Builder builder) {
+    ResultSet resultSet =
+        context.executeQuery(
+            Statement.newBuilder(
+                "SELECT t.option_name, t.option_type, t.option_value "
+                + " FROM information_schema.database_options AS t "
+                + " WHERE t.catalog_name = '' AND t.schema_name = ''")
+                .build());
+
+    ImmutableList.Builder<Export.DatabaseOption> options = ImmutableList.builder();
+    while (resultSet.next()) {
+      String optionName = resultSet.getString(0);
+      String optionType = resultSet.getString(1);
+      String optionValue = resultSet.getString(2);
+      if (!DatabaseOptionAllowlist.DATABASE_OPTION_ALLOWLIST.contains(optionName)) {
+        continue;
+      }
+      options.add(
+          Export.DatabaseOption.newBuilder()
+              .setOptionName(optionName)
+              .setOptionType(optionType)
+              .setOptionValue(optionValue).build());
+    }
+    builder.mergeDatabaseOptions(options.build());
   }
 
   private void listTables(Ddl.Builder builder) {
@@ -128,9 +158,11 @@ public class InformationSchemaScanner {
         context.executeQuery(
             Statement.newBuilder(
                     "SELECT c.table_name, c.column_name,"
-                        + " c.ordinal_position, c.spanner_type, c.is_nullable"
+                        + " c.ordinal_position, c.spanner_type, c.is_nullable,"
+                        + " c.is_generated, c.generation_expression, c.is_stored"
                         + " FROM information_schema.columns as c"
                         + " WHERE c.table_catalog = '' AND c.table_schema = '' "
+                        + " AND c.spanner_state = 'COMMITTED' "
                         + " ORDER BY c.table_name, c.ordinal_position")
                 .build());
     while (resultSet.next()) {
@@ -138,11 +170,19 @@ public class InformationSchemaScanner {
       String columnName = resultSet.getString(1);
       String spannerType = resultSet.getString(3);
       boolean nullable = resultSet.getString(4).equalsIgnoreCase("YES");
+      boolean isGenerated = resultSet.getString(5).equalsIgnoreCase("ALWAYS");
+      String generationExpression = resultSet.isNull(6) ? "" : resultSet.getString(6);
+      boolean isStored = resultSet.isNull(7)
+          ?
+          false : resultSet.getString(7).equalsIgnoreCase("YES");
       builder
           .createTable(tableName)
           .column(columnName)
           .parseType(spannerType)
           .notNull(!nullable)
+          .isGenerated(isGenerated)
+          .generationExpression(generationExpression)
+          .isStored(isStored)
           .endColumn()
           .endTable();
     }
@@ -249,7 +289,7 @@ public class InformationSchemaScanner {
       ImmutableList.Builder<String> options =
           allOptions.computeIfAbsent(kv, k -> ImmutableList.builder());
       if (optionType.equalsIgnoreCase("STRING")) {
-        options.add(optionName + "=\"" + ESCAPER.escape(optionValue) + "\"");
+        options.add(optionName + "=\"" + DdlUtilityComponents.OPTION_STRING_ESCAPER.escape(optionValue) + "\"");
       } else {
         options.add(optionName + "=" + optionValue);
       }
@@ -310,5 +350,37 @@ public class InformationSchemaScanner {
       foreignKey.columnsBuilder().add(column);
       foreignKey.referencedColumnsBuilder().add(referencedColumn);
     }
+  }
+
+  private Map<String, NavigableMap<String, CheckConstraint>> listCheckConstraints() {
+    Map<String, NavigableMap<String, CheckConstraint>> checkConstraints = Maps.newHashMap();
+    ResultSet resultSet =
+        context.executeQuery(
+            Statement.of(
+                "SELECT ctu.TABLE_NAME,"
+                    + " cc.CONSTRAINT_NAME,"
+                    + " cc.CHECK_CLAUSE"
+                    + " FROM INFORMATION_SCHEMA.CONSTRAINT_TABLE_USAGE as ctu"
+                    + " INNER JOIN INFORMATION_SCHEMA.CHECK_CONSTRAINTS as cc"
+                    + " ON ctu.constraint_catalog = cc.constraint_catalog"
+                    + " AND ctu.constraint_schema = cc.constraint_schema"
+                    + " AND ctu.CONSTRAINT_NAME = cc.CONSTRAINT_NAME"
+                    + " WHERE NOT STARTS_WITH(cc.CONSTRAINT_NAME, 'CK_IS_NOT_NULL_')"
+                    + " AND ctu.table_catalog = ''"
+                    + " AND ctu.table_schema = ''"
+                    + " AND ctu.constraint_catalog = ''"
+                    + " AND ctu.constraint_schema = ''"
+                    + " AND cc.SPANNER_STATE = 'COMMITTED'"
+                    + ";"));
+    while (resultSet.next()) {
+      String table = resultSet.getString(0);
+      String name = resultSet.getString(1);
+      String expression = resultSet.getString(2);
+      Map<String, CheckConstraint> tableCheckConstraints =
+          checkConstraints.computeIfAbsent(table, k -> Maps.newTreeMap());
+      tableCheckConstraints.computeIfAbsent(
+          name, k -> CheckConstraint.builder().name(name).expression(expression).build());
+    }
+    return checkConstraints;
   }
 }

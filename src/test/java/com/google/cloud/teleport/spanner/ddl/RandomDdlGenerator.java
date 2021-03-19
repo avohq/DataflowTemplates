@@ -17,9 +17,11 @@
 package com.google.cloud.teleport.spanner.ddl;
 
 import com.google.auto.value.AutoValue;
-import com.google.cloud.spanner.Type;
+import com.google.cloud.teleport.spanner.common.Type;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Sets;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Random;
 import java.util.Set;
 
@@ -42,6 +44,17 @@ public abstract class RandomDdlGenerator {
         Type.Code.TIMESTAMP,
         Type.Code.DATE
       };
+  // Types that could be used by check constraint
+  private static final Set<Type.Code> CHECK_CONSTRAINT_TYPES =
+      new HashSet<>(
+          Arrays.asList(
+              Type.Code.BOOL,
+              Type.Code.INT64,
+              Type.Code.FLOAT64,
+              Type.Code.STRING,
+              Type.Code.TIMESTAMP,
+              Type.Code.DATE));
+
   private static final int MAX_PKS = 16;
 
   public abstract Random getRandom();
@@ -60,17 +73,25 @@ public abstract class RandomDdlGenerator {
 
   public abstract int getMaxForeignKeys();
 
+  public abstract boolean getEnableGeneratedColumns();
+
+  public abstract boolean getEnableCheckConstraints();
+
   public static Builder builder() {
 
     return new AutoValue_RandomDdlGenerator.Builder()
         .setRandom(new Random())
         .setArrayChance(20)
         .setMaxPkComponents(3)
-        .setMaxBranchPerLevel(new int[] {3, 2, 1, 1, 1, 1, 1})
+        .setMaxBranchPerLevel(new int[] {2, 2, 1, 1, 1, 1, 1})
         .setMaxIndex(2)
         .setMaxForeignKeys(2)
+        // TODO: enable once CHECK constraints are enabled
+        .setEnableCheckConstraints(false)
         .setMaxColumns(8)
-        .setMaxIdLength(11);
+        .setMaxIdLength(11)
+        // TODO: enable generated columns once they are supported.
+        .setEnableGeneratedColumns(false);
   }
 
   /** A builder for {@link RandomDdlGenerator}. */
@@ -94,6 +115,10 @@ public abstract class RandomDdlGenerator {
     public abstract Builder setMaxIndex(int indexes);
 
     public abstract Builder setMaxForeignKeys(int foreignKeys);
+
+    public abstract Builder setEnableGeneratedColumns(boolean enable);
+
+    public abstract Builder setEnableCheckConstraints(boolean checkConstraints);
   }
 
   public abstract Builder toBuilder();
@@ -145,6 +170,15 @@ public abstract class RandomDdlGenerator {
 
     Table table = tableBuilder.build();
 
+    if (getEnableGeneratedColumns()) {
+      // Add a generated column
+      Column depColumn = table.columns().get(rnd.nextInt(table.columns().size()));
+      Column generatedColumn = Column.builder().name("generated").type(depColumn.type()).max()
+          .notNull(depColumn.notNull()).generatedAs(depColumn.name()).stored().autoBuild();
+      tableBuilder.addColumn(generatedColumn);
+      table = tableBuilder.build();
+    }
+
     int numIndexes = rnd.nextInt(getMaxIndex());
     ImmutableList.Builder<String> indexes = ImmutableList.builder();
     for (int i = 0; i < numIndexes; i++) {
@@ -152,7 +186,10 @@ public abstract class RandomDdlGenerator {
       IndexColumn.IndexColumnsBuilder<Index.Builder> columns = index.columns();
       boolean interleaved = rnd.nextBoolean();
       Set<String> pks = Sets.newHashSet();
-      if (interleaved) {
+      // Do not interleave indexes at the last table level.
+      // This causes tests to fail as generated schema exceeds interleaving limit.
+      int finalLevel = getMaxBranchPerLevel().length - 1;
+      if (interleaved && level < finalLevel) {
         index.interleaveIn(table.name());
       }
       for (IndexColumn pk : table.primaryKeys()) {
@@ -229,6 +266,23 @@ public abstract class RandomDdlGenerator {
         }
       }
       tableBuilder.foreignKeys(foreignKeys.build());
+    }
+
+    while (getEnableCheckConstraints()) {
+      ImmutableList.Builder<String> checkConstraints = ImmutableList.builder();
+      // Pick a random column to add check constraint on.
+      ImmutableList<Column> columns = table.columns();
+      int colIndex = rnd.nextInt(columns.size());
+      Column column = columns.get(colIndex);
+      if (!CHECK_CONSTRAINT_TYPES.contains(column.type())) {
+        continue;
+      }
+      // An expression that won't be trivially optimized away by query optimizer.
+      String expr = "TO_HEX(SHA1(CAST(" + column.name() + " AS STRING))) <= '~'";
+      String checkName = generateIdentifier(getMaxIdLength());
+      checkConstraints.add("CONSTRAINT " + checkName + " CHECK(" + expr + ")");
+      tableBuilder.checkConstraints(checkConstraints.build());
+      break;
     }
 
     tableBuilder.endTable();

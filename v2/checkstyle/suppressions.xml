@@ -33,4 +33,8 @@
   <suppress checks=".*" files=".+[\\\/]generated-sources[\\\/].+\.java" />
   <suppress checks=".*" files=".+[\\\/]generated-test-sources[\\\/].+\.java" />
 
+  <!-- suppress third party DataStream client which is temporarily added-->
+  <suppress checks=".*" files="common/src/main/java/com/google/api/.*.java" />
+  <suppress checks=".*" files="datastream-to-bigquery/src/main/java/temp/.*.java" />
+
 </suppressions>

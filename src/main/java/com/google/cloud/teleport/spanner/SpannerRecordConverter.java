@@ -16,10 +16,13 @@
 
 package com.google.cloud.teleport.spanner;
 
+import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.Struct;
+import com.google.cloud.teleport.spanner.common.NumericUtils;
 import com.google.common.base.Strings;
 import java.nio.ByteBuffer;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import org.apache.avro.Schema;
@@ -38,6 +41,10 @@ public class SpannerRecordConverter {
     GenericRecordBuilder builder = new GenericRecordBuilder(schema);
     List<Schema.Field> fields = schema.getFields();
     for (Schema.Field field : fields) {
+      if (field.getProp("generationExpression") != null) {
+        // Generated column values are not exported.
+        continue;
+      }
       String fieldName = field.name();
       Schema type = field.schema();
       // Empty string to avoid null checks.
@@ -61,12 +68,28 @@ public class SpannerRecordConverter {
           builder.set(field, nullValue ? null : row.getBoolean(fieldName));
           break;
         case LONG:
-          builder.set(field, nullValue ? null : row.getLong(fieldName));
+          if (spannerType.equals("TIMESTAMP")) {
+            Timestamp ts = row.getTimestamp(fieldName);
+            long microSeconds = TimeUnit.SECONDS.toMicros(ts.getSeconds())
+                + TimeUnit.NANOSECONDS.toMicros(ts.getNanos());
+            builder.set(field, nullValue ? null : microSeconds);
+          } else {
+            builder.set(field, nullValue ? null : row.getLong(fieldName));
+          }
           break;
         case DOUBLE:
           builder.set(field, nullValue ? null : row.getDouble(fieldName));
           break;
         case BYTES:
+          if (spannerType.equals("NUMERIC")) {
+            // TODO: uses row.getNumeric() once teleport uses new spanner library.
+            builder.set(
+                field,
+                nullValue
+                    ? null
+                    : ByteBuffer.wrap(NumericUtils.stringToBytes(row.getString(fieldName))));
+            break;
+          }
           builder.set(
               field, nullValue ? null : ByteBuffer.wrap(row.getBytes(fieldName).toByteArray()));
           break;
@@ -98,7 +121,21 @@ public class SpannerRecordConverter {
                 builder.set(field, nullValue ? null : row.getBooleanList(fieldName));
                 break;
               case LONG:
-                builder.set(field, nullValue ? null : row.getLongList(fieldName));
+                if (spannerType.equals("ARRAY<TIMESTAMP>")) {
+                  List<Long> values =
+                      row.getTimestampList(fieldName)
+                          .stream()
+                          .map(timestamp -> timestamp == null
+                                   ? null
+                                   : (TimeUnit.SECONDS.toMicros(timestamp.getSeconds())
+                                       + TimeUnit.NANOSECONDS
+                                       .toMicros(timestamp.getNanos()))
+                              )
+                          .collect(Collectors.toList());
+                  builder.set(field, nullValue ? null : values);
+                } else {
+                  builder.set(field, nullValue ? null : row.getLongList(fieldName));
+                }
                 break;
               case DOUBLE:
                 {
@@ -107,6 +144,23 @@ public class SpannerRecordConverter {
                 }
               case BYTES:
                 {
+                  if (spannerType.equals("ARRAY<NUMERIC>")) {
+                    if (nullValue) {
+                      builder.set(field, null);
+                      break;
+                    }
+                    List<ByteBuffer> numericValues = null;
+                    numericValues =
+                        row.getStringList(fieldName).stream()
+                            .map(
+                                numeric ->
+                                    numeric == null
+                                        ? null
+                                        : ByteBuffer.wrap(NumericUtils.stringToBytes(numeric)))
+                            .collect(Collectors.toList());
+                    builder.set(field, numericValues);
+                    break;
+                  }
                   List<ByteBuffer> value = null;
                   if (!nullValue) {
                     value =

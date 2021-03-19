@@ -16,7 +16,7 @@
 
 package com.google.cloud.teleport.spanner;
 
-import com.google.cloud.spanner.Type;
+import com.google.cloud.teleport.spanner.common.NumericUtils;
 import com.google.cloud.teleport.spanner.ddl.Column;
 import com.google.cloud.teleport.spanner.ddl.Ddl;
 import com.google.cloud.teleport.spanner.ddl.IndexColumn;
@@ -24,6 +24,7 @@ import com.google.cloud.teleport.spanner.ddl.Table;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.stream.Collectors;
+import org.apache.avro.LogicalTypes;
 import org.apache.avro.Schema;
 import org.apache.avro.SchemaBuilder;
 
@@ -31,10 +32,13 @@ import org.apache.avro.SchemaBuilder;
 public class DdlToAvroSchemaConverter {
   private final String namespace;
   private final String version;
+  private final Boolean shouldExportTimestampAsLogicalType;
 
-  public DdlToAvroSchemaConverter(String namespace, String version) {
+  public DdlToAvroSchemaConverter(String namespace, String version,
+      Boolean shouldExportTimestampAsLogicalType) {
     this.namespace = namespace;
     this.version = version;
+    this.shouldExportTimestampAsLogicalType = shouldExportTimestampAsLogicalType;
   }
 
   public Collection<Schema> convert(Ddl ddl) {
@@ -66,6 +70,9 @@ public class DdlToAvroSchemaConverter {
       for (int i = 0; i < table.foreignKeys().size(); i++) {
         recordBuilder.prop("spannerForeignKey_" + i, table.foreignKeys().get(i));
       }
+      for (int i = 0; i < table.checkConstraints().size(); i++) {
+        recordBuilder.prop("spannerCheckConstraint_" + i, table.checkConstraints().get(i));
+      }
       SchemaBuilder.FieldAssembler<Schema> fieldsAssembler = recordBuilder.fields();
       for (Column cm : table.columns()) {
         SchemaBuilder.FieldBuilder<Schema> fieldBuilder = fieldsAssembler.name(cm.name());
@@ -73,11 +80,20 @@ public class DdlToAvroSchemaConverter {
         for (int i = 0; i < cm.columnOptions().size(); i++) {
           fieldBuilder.prop("spannerOption_" + i, cm.columnOptions().get(i));
         }
-        Schema avroType = avroType(cm.type());
-        if (!cm.notNull()) {
-          avroType = wrapAsNullable(avroType);
+        if (cm.isGenerated()) {
+          fieldBuilder.prop("notNull", Boolean.toString(cm.notNull()));
+          fieldBuilder.prop("generationExpression", cm.generationExpression());
+          fieldBuilder.prop("stored", Boolean.toString(cm.isStored()));
+          // Make the type null to allow us not export the generated column values,
+          // which are semantically logical entities.
+          fieldBuilder.type(SchemaBuilder.builder().nullType()).withDefault(null);
+        } else {
+          Schema avroType = avroType(cm.type());
+          if (!cm.notNull()) {
+            avroType = wrapAsNullable(avroType);
+          }
+          fieldBuilder.type(avroType).noDefault();
         }
-        fieldBuilder.type(avroType).noDefault();
       }
       Schema schema = fieldsAssembler.endRecord();
       schemas.add(schema);
@@ -86,7 +102,7 @@ public class DdlToAvroSchemaConverter {
     return schemas;
   }
 
-  private Schema avroType(Type spannerType) {
+  private Schema avroType(com.google.cloud.teleport.spanner.common.Type spannerType) {
     switch (spannerType.getCode()) {
       case BOOL:
         return SchemaBuilder.builder().booleanType();
@@ -99,9 +115,14 @@ public class DdlToAvroSchemaConverter {
       case BYTES:
         return SchemaBuilder.builder().bytesType();
       case TIMESTAMP:
-        return SchemaBuilder.builder().stringType();
+        return shouldExportTimestampAsLogicalType
+            ? LogicalTypes.timestampMicros().addToSchema(SchemaBuilder.builder().longType())
+            : SchemaBuilder.builder().stringType();
       case DATE:
         return SchemaBuilder.builder().stringType();
+      case NUMERIC:
+        return LogicalTypes.decimal(NumericUtils.PRECISION, NumericUtils.SCALE)
+            .addToSchema(SchemaBuilder.builder().bytesType());
       case ARRAY:
         Schema avroItemsType = avroType(spannerType.getArrayElementType());
         return SchemaBuilder.builder().array().items().type(wrapAsNullable(avroItemsType));

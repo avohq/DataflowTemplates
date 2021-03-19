@@ -22,6 +22,7 @@ import com.google.cloud.teleport.spanner.ExportProtos.Export;
 import com.google.cloud.teleport.spanner.ExportProtos.TableManifest;
 import com.google.cloud.teleport.spanner.ddl.Ddl;
 import com.google.cloud.teleport.spanner.ddl.Table;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Strings;
 import com.google.common.base.Supplier;
 import com.google.common.collect.Iterables;
@@ -65,9 +66,9 @@ import org.apache.beam.sdk.io.WriteFilesResult;
 import org.apache.beam.sdk.io.fs.ResolveOptions;
 import org.apache.beam.sdk.io.fs.ResourceId;
 import org.apache.beam.sdk.io.gcp.spanner.ExposedSpannerAccessor;
+import org.apache.beam.sdk.io.gcp.spanner.LocalSpannerIO;
 import org.apache.beam.sdk.io.gcp.spanner.ReadOperation;
 import org.apache.beam.sdk.io.gcp.spanner.SpannerConfig;
-import org.apache.beam.sdk.io.gcp.spanner.SpannerIO;
 import org.apache.beam.sdk.io.gcp.spanner.Transaction;
 import org.apache.beam.sdk.options.ValueProvider;
 import org.apache.beam.sdk.transforms.Combine;
@@ -103,8 +104,8 @@ import org.slf4j.LoggerFactory;
  * <p>For example, for a database with two tables Users and Singers, the pipeline will export the
  * following file set. <code>
  *  Singers-manifest.json
- *  Users.avro-00000-of-00002
- *  Users.avro-00001-of-00002
+ *  Singers.avro-00000-of-00002
+ *  Singers.avro-00001-of-00002
  *  Users-manifest.json
  *  Users.avro-00000-of-00003
  *  Users.avro-00001-of-00003
@@ -121,24 +122,28 @@ public class ExportTransform extends PTransform<PBegin, WriteFilesResult<String>
   private final ValueProvider<String> outputDir;
   private final ValueProvider<String> testJobId;
   private final ValueProvider<String> snapshotTime;
+  private final ValueProvider<Boolean> shouldExportTimestampAsLogicalType;
 
   public ExportTransform(
       SpannerConfig spannerConfig,
       ValueProvider<String> outputDir,
       ValueProvider<String> testJobId) {
     this(spannerConfig, outputDir, testJobId,
-         /* snapshotTime= */ ValueProvider.StaticValueProvider.of(""));
+        /*snapshotTime=*/ ValueProvider.StaticValueProvider.of(""),
+        /*shouldExportTimestampAsLogicalType=*/ValueProvider.StaticValueProvider.of(false));
   }
 
   public ExportTransform(
       SpannerConfig spannerConfig,
       ValueProvider<String> outputDir,
       ValueProvider<String> testJobId,
-      ValueProvider<String> snapshotTime) {
+      ValueProvider<String> snapshotTime,
+      ValueProvider<Boolean> shouldExportTimestampAsLogicalType) {
     this.spannerConfig = spannerConfig;
     this.outputDir = outputDir;
     this.testJobId = testJobId;
     this.snapshotTime = snapshotTime;
+    this.shouldExportTimestampAsLogicalType = shouldExportTimestampAsLogicalType;
   }
 
   /**
@@ -222,7 +227,8 @@ public class ExportTransform extends PTransform<PBegin, WriteFilesResult<String>
                       @ProcessElement
                       public void processElement(ProcessContext c) {
                         Collection<Schema> avroSchemas =
-                            new DdlToAvroSchemaConverter("spannerexport", "1.0.0")
+                            new DdlToAvroSchemaConverter("spannerexport", "1.0.0",
+                                shouldExportTimestampAsLogicalType.get())
                                 .convert(c.element());
                         for (Schema schema : avroSchemas) {
                           c.output(KV.of(schema.getName(), new SerializableSchemaSupplier(schema)));
@@ -234,7 +240,7 @@ public class ExportTransform extends PTransform<PBegin, WriteFilesResult<String>
     PCollection<Struct> rows =
         tables.apply(
             "Read all rows from Spanner",
-            SpannerIO.readAll().withTransaction(tx).withSpannerConfig(spannerConfig));
+            LocalSpannerIO.readAll().withTransaction(tx).withSpannerConfig(spannerConfig));
 
     ValueProvider<ResourceId> resource =
         ValueProvider.NestedValueProvider.of(
@@ -386,9 +392,16 @@ public class ExportTransform extends PTransform<PBegin, WriteFilesResult<String>
             .via(Contextful.fn(KV::getValue), TextIO.sink())
             .withTempDirectory(outputDir));
 
+    PCollection<List<Export.Table>> metadataTables =
+        tableManifests
+            .apply("Combine table metadata", Combine.globally(new CombineTableMetadata()));
+
+    PCollectionView<Ddl> ddlView = ddl.apply("Cloud Spanner DDL as view", View.asSingleton());
+
     PCollection<String> metadataContent =
-        tableManifests.apply(
-            "Create database manifest", Combine.globally(new CreateDatabaseManifest()));
+        metadataTables.apply(
+            "Create database manifest",
+            ParDo.of(new CreateDatabaseManifest(ddlView)).withSideInputs(ddlView));
 
     Contextful.Fn<String, FileIO.Write.FileNaming> manifestNaming =
         (element, c) ->
@@ -532,8 +545,8 @@ public class ExportTransform extends PTransform<PBegin, WriteFilesResult<String>
   }
 
   /** Given map of table names, create the database manifest contents. */
-  static class CreateDatabaseManifest
-      extends CombineFn<KV<String, String>, List<Export.Table>, String> {
+  static class CombineTableMetadata
+      extends CombineFn<KV<String, String>, List<Export.Table>, List<Export.Table>> {
 
     @Override
     public List<Export.Table> createAccumulator() {
@@ -562,11 +575,29 @@ public class ExportTransform extends PTransform<PBegin, WriteFilesResult<String>
     }
 
     @Override
-    public String extractOutput(List<Export.Table> accumulator) {
+    public List<Export.Table> extractOutput(List<Export.Table> accumulator) {
+      return accumulator;
+    }
+  }
+
+  @VisibleForTesting
+  static class CreateDatabaseManifest extends DoFn<List<Export.Table>, String> {
+
+    private final PCollectionView<Ddl> ddlView;
+
+    public CreateDatabaseManifest(PCollectionView<Ddl> ddlView){
+      this.ddlView = ddlView;
+    }
+
+    @ProcessElement
+    public void processElement(
+        @Element List<Export.Table> metadataTables, OutputReceiver<String> out, ProcessContext c) {
+      Ddl ddl = c.sideInput(ddlView);
       ExportProtos.Export.Builder exportManifest = ExportProtos.Export.newBuilder();
-      exportManifest.addAllTables(accumulator);
+      exportManifest.addAllTables(metadataTables);
+      exportManifest.addAllDatabaseOptions(ddl.databaseOptions());
       try {
-        return JsonFormat.printer().print(exportManifest.build());
+        out.output(JsonFormat.printer().print(exportManifest.build()));
       } catch (InvalidProtocolBufferException e) {
         throw new RuntimeException(e);
       }
@@ -605,39 +636,43 @@ public class ExportTransform extends PTransform<PBegin, WriteFilesResult<String>
     public void processElement(ProcessContext c) throws Exception {
       String timestamp = ExportTransform.this.snapshotTime.get();
 
-      TimestampBound tsb;
-      if ("".equals(timestamp)) {
-        /* If no timestamp is specified, read latest data */
-        tsb = TimestampBound.strong();
-      } else {
-        /* Else try to read data in the timestamp specified. */
-        com.google.cloud.Timestamp tsVal;
-        try {
-          tsVal = com.google.cloud.Timestamp.parseTimestamp(timestamp);
-        } catch (Exception e) {
-          throw new IllegalStateException("Invalid timestamp specified " + timestamp);
-        }
-
-        /*
-         * If timestamp specified is in the future, spanner read will wait
-         * till the time has passed. Abort the job and complain early.
-         */
-        if (tsVal.compareTo(com.google.cloud.Timestamp.now()) > 0) {
-          throw new IllegalStateException("Timestamp specified is in future " + timestamp);
-        }
-
-        /*
-         * Export jobs with Timestamps which are older than 
-         * maximum staleness time (one hour) fail with the FAILED_PRECONDITION
-         * error - https://cloud.google.com/spanner/docs/timestamp-bounds
-         * Hence we do not handle the case.
-         */
-
-        tsb = TimestampBound.ofReadTimestamp(tsVal);
-      }
+      TimestampBound tsb = createTimestampBound(timestamp);
       BatchReadOnlyTransaction tx =
         spannerAccessor.getBatchClient().batchReadOnlyTransaction(tsb);
       c.output(Transaction.create(tx.getBatchTransactionId()));
+    }
+  }
+
+  @VisibleForTesting
+  static TimestampBound createTimestampBound(String timestamp) {
+    if ("".equals(timestamp)) {
+      /* If no timestamp is specified, read latest data */
+      return TimestampBound.strong();
+    } else {
+      /* Else try to read data in the timestamp specified. */
+      com.google.cloud.Timestamp tsVal;
+      try {
+        tsVal = com.google.cloud.Timestamp.parseTimestamp(timestamp);
+      } catch (Exception e) {
+        throw new IllegalStateException("Invalid timestamp specified " + timestamp);
+      }
+
+      /*
+       * If timestamp specified is in the future, spanner read will wait
+       * till the time has passed. Abort the job and complain early.
+       */
+      if (tsVal.compareTo(com.google.cloud.Timestamp.now()) > 0) {
+        throw new IllegalStateException("Timestamp specified is in future " + timestamp);
+      }
+
+      /*
+       * Export jobs with Timestamps which are older than
+       * maximum staleness time (one hour) fail with the FAILED_PRECONDITION
+       * error - https://cloud.google.com/spanner/docs/timestamp-bounds
+       * Hence we do not handle the case.
+       */
+
+      return TimestampBound.ofReadTimestamp(tsVal);
     }
   }
 

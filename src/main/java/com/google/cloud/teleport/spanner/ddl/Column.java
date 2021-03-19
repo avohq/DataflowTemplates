@@ -17,7 +17,7 @@
 package com.google.cloud.teleport.spanner.ddl;
 
 import com.google.auto.value.AutoValue;
-import com.google.cloud.spanner.Type;
+import com.google.cloud.teleport.spanner.common.Type;
 import com.google.common.collect.ImmutableList;
 import java.io.IOException;
 import java.io.Serializable;
@@ -40,14 +40,27 @@ public abstract class Column implements Serializable {
 
   public abstract boolean notNull();
 
+  public abstract boolean isGenerated();
+
+  public abstract String generationExpression();
+
+  public abstract boolean isStored();
+
   public static Builder builder() {
-    return new AutoValue_Column.Builder().columnOptions(ImmutableList.of()).notNull(false);
+    return new AutoValue_Column.Builder().columnOptions(ImmutableList.of()).notNull(false)
+        .isGenerated(false).generationExpression("").isStored(false);
   }
 
   public void prettyPrint(Appendable appendable) throws IOException {
     appendable.append(String.format("%1$-40s", "`" + name() + "`")).append(typeString());
     if (notNull()) {
       appendable.append(" NOT NULL");
+    }
+    if (isGenerated()) {
+      appendable.append(" AS (").append(generationExpression()).append(")");
+      if (isStored()) {
+        appendable.append(" STORED");
+      }
     }
     if (columnOptions() == null) {
       return;
@@ -95,6 +108,8 @@ public abstract class Column implements Serializable {
         return "DATE";
       case TIMESTAMP:
         return "TIMESTAMP";
+      case NUMERIC:
+        return "NUMERIC";
       case ARRAY:
         Type arrayType = type.getArrayElementType();
         return "ARRAY<" + typeString(arrayType, size) + ">";
@@ -126,6 +141,20 @@ public abstract class Column implements Serializable {
       return notNull(true);
     }
 
+    public abstract Builder isGenerated(boolean generated);
+
+    public abstract Builder generationExpression(String expression);
+
+    public Builder generatedAs(String expression) {
+      return isGenerated(true).generationExpression(expression);
+    }
+
+    public abstract Builder isStored(boolean generated);
+
+    public Builder stored() {
+      return isStored(true);
+    }
+
     public abstract Column autoBuild();
 
     public Builder int64() {
@@ -155,6 +184,10 @@ public abstract class Column implements Serializable {
 
     public Builder date() {
       return type(Type.date());
+    }
+
+    public Builder numeric() {
+      return type(Type.numeric());
     }
 
     public Builder max() {
@@ -215,7 +248,9 @@ public abstract class Column implements Serializable {
     if (spannerType.equals("DATE")) {
       return t(Type.date(), null);
     }
-
+    if (spannerType.equals("NUMERIC")) {
+      return t(Type.numeric(), null);
+    }
     if (spannerType.startsWith("ARRAY")) {
       // Substring "ARRAY<"xxx">"
       String spannerArrayType = spannerType.substring(6, spannerType.length() - 1);

@@ -22,7 +22,8 @@ import static org.junit.Assert.assertThat;
 
 import com.google.api.services.bigquery.model.TableRow;
 import com.google.cloud.teleport.v2.coders.FailsafeElementCoder;
-import com.google.cloud.teleport.v2.templates.PubSubCdcToBigQuery.PubsubMessageToTableRow;
+import com.google.cloud.teleport.v2.transforms.PubSubToFailSafeElement;
+import com.google.cloud.teleport.v2.transforms.UDFTextTransformer.InputUDFToTableRow;
 import org.apache.beam.sdk.coders.CoderRegistry;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubMessage;
@@ -31,6 +32,7 @@ import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.testing.PAssert;
 import org.apache.beam.sdk.testing.TestPipeline;
 import org.apache.beam.sdk.transforms.Create;
+import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.values.PCollectionTuple;
 import org.apache.beam.sdk.values.TimestampedValue;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableMap;
@@ -62,8 +64,8 @@ public class PubSubCdcToBigQueryTest {
     final Instant timestamp =
         new DateTime(2022, 2, 22, 22, 22, 22, 222, DateTimeZone.UTC).toInstant();
 
-    final FailsafeElementCoder<PubsubMessage, String> coder =
-        FailsafeElementCoder.of(PubsubMessageWithAttributesCoder.of(), StringUtf8Coder.of());
+    final FailsafeElementCoder<String, String> coder =
+        FailsafeElementCoder.of(StringUtf8Coder.of(), StringUtf8Coder.of());
 
     CoderRegistry coderRegistry = pipeline.getCoderRegistry();
     coderRegistry.registerCoderForType(coder.getEncodedTypeDescriptor(), coder);
@@ -78,6 +80,14 @@ public class PubSubCdcToBigQueryTest {
     options.setJavascriptTextTransformGcsPath(transformPath);
     options.setJavascriptTextTransformFunctionName(transformFunction);
 
+    InputUDFToTableRow<String> deadletterHandler =
+        new InputUDFToTableRow<String>(options.getJavascriptTextTransformGcsPath(),
+                                              options.getJavascriptTextTransformFunctionName(),
+                                              options.getPythonTextTransformGcsPath(),
+                                              options.getPythonTextTransformFunctionName(),
+                                              options.getRuntimeRetries(),
+                                              coder);
+
     // Build pipeline
     PCollectionTuple transformOut =
         pipeline
@@ -85,12 +95,15 @@ public class PubSubCdcToBigQueryTest {
                 "CreateInput",
                 Create.timestamped(TimestampedValue.of(message, timestamp))
                     .withCoder(PubsubMessageWithAttributesCoder.of()))
-            .apply("ConvertMessageToTableRow", new PubsubMessageToTableRow(options));
+            .apply("ConvertPubSubToFailsafe", ParDo.of(new PubSubToFailSafeElement()))
+            .apply("ConvertMessageToTableRow", deadletterHandler);
+    transformOut.get(deadletterHandler.udfDeadletterOut).setCoder(coder);
+    transformOut.get(deadletterHandler.transformDeadletterOut).setCoder(coder);
 
     // Assert
-    PAssert.that(transformOut.get(PubSubCdcToBigQuery.UDF_DEADLETTER_OUT)).empty();
-    PAssert.that(transformOut.get(PubSubCdcToBigQuery.TRANSFORM_DEADLETTER_OUT)).empty();
-    PAssert.that(transformOut.get(PubSubCdcToBigQuery.TRANSFORM_OUT))
+    PAssert.that(transformOut.get(deadletterHandler.udfDeadletterOut)).empty();
+    PAssert.that(transformOut.get(deadletterHandler.transformDeadletterOut)).empty();
+    PAssert.that(transformOut.get(deadletterHandler.transformOut))
         .satisfies(
             collection -> {
               TableRow result = collection.iterator().next();

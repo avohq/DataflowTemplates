@@ -16,14 +16,14 @@
 
 package com.google.cloud.teleport.spanner;
 
-import static org.hamcrest.text.IsEqualIgnoringWhiteSpace.equalToIgnoringWhiteSpace;
+import static org.hamcrest.text.IsEqualCompressingWhiteSpace.equalToCompressingWhiteSpace;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThat;
 
 import com.google.cloud.spanner.ReadOnlyTransaction;
 import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
-import com.google.cloud.spanner.Type;
+import com.google.cloud.teleport.spanner.common.Type;
 import com.google.cloud.teleport.spanner.ddl.Ddl;
 import com.google.cloud.teleport.spanner.ddl.InformationSchemaScanner;
 import com.google.common.collect.Lists;
@@ -212,9 +212,11 @@ public class ExportTimestampTest {
     ValueProvider.StaticValueProvider<String> source = ValueProvider.StaticValueProvider
         .of(tmpDir + "/" + jobIdName);
     ValueProvider.StaticValueProvider<String> timestamp = ValueProvider.StaticValueProvider.of(ts);
+    ValueProvider.StaticValueProvider<Boolean> exportAsLogicalType =
+        ValueProvider.StaticValueProvider.of(false);
     SpannerConfig sourceConfig = spannerServer.getSpannerConfig(sourceDb);
     exportPipeline.apply("Export", new ExportTransform(sourceConfig, destination,
-                                                       jobId, timestamp));
+                                                       jobId, timestamp, exportAsLogicalType));
     PipelineResult exportResult = exportPipeline.run();
     exportResult.waitUntilFinish();
 
@@ -242,7 +244,7 @@ public class ExportTimestampTest {
     Ddl sourceDdl = readDdl(sourceDb);
     Ddl destinationDdl = readDdl(destDb);
 
-    assertThat(sourceDdl.prettyPrint(), equalToIgnoringWhiteSpace(destinationDdl.prettyPrint()));
+    assertThat(sourceDdl.prettyPrint(), equalToCompressingWhiteSpace(destinationDdl.prettyPrint()));
   }
 
   private Ddl readDdl(String db) {

@@ -21,15 +21,15 @@ import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
-import static org.hamcrest.text.IsEqualIgnoringWhiteSpace.equalToIgnoringWhiteSpace;
+import static org.hamcrest.text.IsEqualCompressingWhiteSpace.equalToCompressingWhiteSpace;
 import static org.junit.Assert.assertThat;
 
 import com.google.cloud.spanner.BatchClient;
 import com.google.cloud.spanner.BatchReadOnlyTransaction;
 import com.google.cloud.spanner.TimestampBound;
-import com.google.cloud.spanner.Type;
 import com.google.cloud.teleport.spanner.IntegrationTest;
 import com.google.cloud.teleport.spanner.SpannerServerResource;
+import com.google.cloud.teleport.spanner.common.Type;
 import com.google.common.collect.HashMultimap;
 import java.util.Arrays;
 import java.util.Collections;
@@ -153,7 +153,7 @@ public class InformationSchemaScannerTest {
     assertThat(pk.get(2).order(), equalTo(IndexColumn.Order.ASC));
 
     // Verify pretty print.
-    assertThat(ddl.prettyPrint(), equalToIgnoringWhiteSpace(allTypes));
+    assertThat(ddl.prettyPrint(), equalToCompressingWhiteSpace(allTypes));
   }
 
   @Test
@@ -225,7 +225,7 @@ public class InformationSchemaScannerTest {
     assertThat(table.column("table"), notNullValue());
     assertThat(table.column("null"), notNullValue());
 
-    assertThat(ddl.prettyPrint(), equalToIgnoringWhiteSpace(statement));
+    assertThat(ddl.prettyPrint(), equalToCompressingWhiteSpace(statement));
   }
 
   @Test
@@ -246,7 +246,7 @@ public class InformationSchemaScannerTest {
 
     spannerServer.createDatabase(dbId, statements);
     Ddl ddl = getDatabaseDdl();
-    assertThat(ddl.prettyPrint(), equalToIgnoringWhiteSpace(String.join("", statements)));
+    assertThat(ddl.prettyPrint(), equalToCompressingWhiteSpace(String.join("", statements)));
   }
 
   @Test
@@ -267,7 +267,23 @@ public class InformationSchemaScannerTest {
 
     spannerServer.createDatabase(dbId, statements);
     Ddl ddl = getDatabaseDdl();
-    assertThat(ddl.prettyPrint(), equalToIgnoringWhiteSpace(String.join("", statements)));
+    assertThat(ddl.prettyPrint(), equalToCompressingWhiteSpace(String.join("", statements)));
+  }
+
+  // TODO: enable this test once CHECK constraints are enabled
+  // @Test
+  public void checkConstraints() throws Exception {
+    List<String> statements =
+        Arrays.asList(
+            "CREATE TABLE `T` ("
+                + " `id`     INT64 NOT NULL,"
+                + " `A`      INT64 NOT NULL,"
+                + " CONSTRAINT `ck` CHECK(A>0),"
+                + " ) PRIMARY KEY (`id` ASC)");
+
+    spannerServer.createDatabase(dbId, statements);
+    Ddl ddl = getDatabaseDdl();
+    assertThat(ddl.prettyPrint(), equalToCompressingWhiteSpace(String.join("", statements)));
   }
 
   @Test
@@ -281,6 +297,43 @@ public class InformationSchemaScannerTest {
 
     spannerServer.createDatabase(dbId, Collections.singleton(statement));
     Ddl ddl = getDatabaseDdl();
-    assertThat(ddl.prettyPrint(), equalToIgnoringWhiteSpace(statement));
+    assertThat(ddl.prettyPrint(), equalToCompressingWhiteSpace(statement));
+  }
+
+  // TODO: enable this test once generated columns are supported.
+  // @Test
+  public void generatedColumns() throws Exception {
+        String statement =
+        "CREATE TABLE `T` ("
+            + " `id`                                     INT64 NOT NULL,"
+            + " `generated`                              INT64 NOT NULL AS (`id`) STORED, "
+            + " ) PRIMARY KEY (`id` ASC)";
+
+    spannerServer.createDatabase(dbId, Collections.singleton(statement));
+    Ddl ddl = getDatabaseDdl();
+    assertThat(ddl.prettyPrint(), equalToCompressingWhiteSpace(statement));
+  }
+
+  @Test
+  public void databaseOptions() throws Exception {
+    List<String> statements =
+        Arrays.asList(
+            "ALTER DATABASE `" + dbId + "` SET OPTIONS ( version_retention_period = \"5d\" )\n",
+            "CREATE TABLE `Users` ("
+                + " `id`                                    INT64 NOT NULL,"
+                + " `first_name`                            STRING(10),"
+                + " `last_name`                             STRING(MAX),"
+                + " `age`                                   INT64,"
+                + " ) PRIMARY KEY (`id` ASC)",
+            " CREATE UNIQUE NULL_FILTERED INDEX `a_last_name_idx` ON "
+                + " `Users`(`last_name` ASC) STORING (`first_name`)",
+            " CREATE INDEX `b_age_idx` ON `Users`(`age` DESC)",
+            " CREATE UNIQUE INDEX `c_first_name_idx` ON `Users`(`first_name` ASC)");
+
+    spannerServer.createDatabase(dbId, statements);
+    Ddl ddl = getDatabaseDdl();
+    String alterStatement = statements.get(0);
+    statements.set(0, alterStatement.replace(dbId, "%db_name%"));
+    assertThat(ddl.prettyPrint(), equalToCompressingWhiteSpace(String.join("", statements)));
   }
 }

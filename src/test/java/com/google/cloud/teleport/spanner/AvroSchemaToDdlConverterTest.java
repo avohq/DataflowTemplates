@@ -18,7 +18,7 @@ package com.google.cloud.teleport.spanner;
 
 import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.hasSize;
-import static org.hamcrest.text.IsEqualIgnoringWhiteSpace.equalToIgnoringWhiteSpace;
+import static org.hamcrest.text.IsEqualCompressingWhiteSpace.equalToCompressingWhiteSpace;
 import static org.junit.Assert.assertThat;
 
 import com.google.cloud.teleport.spanner.ddl.Ddl;
@@ -57,7 +57,39 @@ public class AvroSchemaToDdlConverterTest {
             + "    \"name\" : \"last_name\","
             + "    \"type\" : [ \"null\", \"string\" ],"
             + "    \"sqlType\" : \"STRING(MAX)\""
-            + "  } ],"
+            + "  }, {"
+            + "    \"name\" : \"full_name\","
+            + "    \"type\" : \"null\","
+            + "    \"sqlType\" : \"STRING(MAX)\","
+            + "    \"notNull\" : \"false\","
+            + "    \"generationExpression\" : \"CONCAT(first_name, ' ', last_name)\","
+            + "    \"stored\" : \"true\""
+            + "  }, {"
+            + "    \"name\" : \"numeric\","
+            + "    \"type\" : [\"null\", {\"type\":\"bytes\",\"logicalType\":\"decimal\"}],"
+            + "    \"sqlType\" : \"NUMERIC\""
+            + "  }, {"
+            + "    \"name\" : \"numeric2\","
+            + "    \"type\" : [\"null\", {\"type\":\"bytes\",\"logicalType\":\"decimal\","
+            + "                \"precision\":38,\"scale\":9}]" // Omitting sqlType
+            + "  }, {"
+            + "    \"name\" : \"notNumeric\","
+            + "    \"type\" : [\"null\", {\"type\":\"bytes\",\"logicalType\":\"decimal\","
+            + "                \"precision\":38}]" // Omitting sqlType
+            + "  }, {"
+            + "    \"name\" : \"notNumeric2\","
+            + "    \"type\" : [\"null\", {\"type\":\"bytes\",\"logicalType\":\"decimal\","
+            + "                \"precision\":38,\"scale\":10}]" // Omitting sqlType
+            + "  }, {"
+            + "    \"name\":\"numericArr\","
+            + "    \"type\": [\"null\",{\"type\":\"array\",\"items\":[\"null\",{\"type\":\"bytes\","
+            + "              \"logicalType\":\"decimal\",\"precision\":38,\"scale\":9}]}]"
+                             // Omitting sqlType
+            + "  }, {"
+            + "    \"name\":\"notNumericArr\","
+            + "    \"type\": [\"null\",{\"type\":\"array\",\"items\":[\"null\",{\"type\":\"bytes\","
+            +                "\"logicalType\":\"decimal\",\"precision\":35}]}]" // Omitting sqlType
+            + "  }],"
             + "  \"googleStorage\" : \"CloudSpanner\","
             + "  \"spannerParent\" : \"\","
             + "  \"googleFormatVersion\" : \"booleans\","
@@ -67,7 +99,9 @@ public class AvroSchemaToDdlConverterTest {
             + "  \"CREATE INDEX `UsersByFirstName` ON `Users` (`first_name`)\","
             + "  \"spannerForeignKey_0\" : "
             + "  \"ALTER TABLE `Users` ADD CONSTRAINT `fk` FOREIGN KEY (`first_name`) "
-            + "  REFERENCES `AllowedNames` (`first_name`)\""
+            + "  REFERENCES `AllowedNames` (`first_name`)\","
+            + "  \"spannerCheckConstraint_0\" : "
+            + "  \"CONSTRAINT `ck` CHECK(`first_name` != 'last_name')\""
             + "}";
 
     Schema schema = new Schema.Parser().parse(avroString);
@@ -77,11 +111,19 @@ public class AvroSchemaToDdlConverterTest {
     assertThat(ddl.allTables(), hasSize(1));
     assertThat(
         ddl.prettyPrint(),
-        equalToIgnoringWhiteSpace(
+        equalToCompressingWhiteSpace(
             "CREATE TABLE `Users` ("
-                + " `id`                                    INT64 NOT NULL,"
-                + " `first_name`                             STRING(10),"
-                + " `last_name`                             STRING(MAX),"
+                + " `id`              INT64 NOT NULL,"
+                + " `first_name`      STRING(10),"
+                + " `last_name`       STRING(MAX),"
+                + " `full_name`       STRING(MAX) AS (CONCAT(first_name, ' ', last_name)) STORED,"
+                + " `numeric`         NUMERIC,"
+                + " `numeric2`        NUMERIC,"
+                + " `notNumeric`      BYTES(MAX),"
+                + " `notNumeric2`     BYTES(MAX),"
+                + " `numericArr`      ARRAY<NUMERIC>,"
+                + " `notNumericArr`   ARRAY<BYTES(MAX)>,"
+                + " CONSTRAINT `ck` CHECK(`first_name` != 'last_name'),"
                 + " ) PRIMARY KEY (`id` ASC, `last_name` DESC)"
                 + " CREATE INDEX `UsersByFirstName` ON `Users` (`first_name`)"
                 + " ALTER TABLE `Users` ADD CONSTRAINT `fk`"
@@ -117,7 +159,7 @@ public class AvroSchemaToDdlConverterTest {
     assertThat(ddl.allTables(), hasSize(1));
     assertThat(
         ddl.prettyPrint(),
-        equalToIgnoringWhiteSpace(
+        equalToCompressingWhiteSpace(
             "CREATE TABLE `Users` ("
                 + " `id`                                    INT64 NOT NULL,"
                 + " `first_name`                             STRING(10) "

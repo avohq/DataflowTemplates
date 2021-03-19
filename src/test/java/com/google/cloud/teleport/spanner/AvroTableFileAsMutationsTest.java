@@ -21,7 +21,7 @@ import static org.hamcrest.Matchers.hasSize;
 import static org.junit.Assert.assertThat;
 
 import com.google.cloud.spanner.Mutation;
-import com.google.cloud.spanner.Type;
+import com.google.cloud.teleport.spanner.common.Type;
 import com.google.cloud.teleport.spanner.ddl.Ddl;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
@@ -168,7 +168,8 @@ public class AvroTableFileAsMutationsTest {
 
   @Test
   public void testAvroToMutationsTransform() throws Exception {
-    DdlToAvroSchemaConverter converter = new DdlToAvroSchemaConverter("spannertest", "booleans");
+    DdlToAvroSchemaConverter converter = new DdlToAvroSchemaConverter("spannertest",
+        "booleans", false);
     Ddl ddl =
         Ddl.builder()
             .createTable("Users")
@@ -183,6 +184,12 @@ public class AvroTableFileAsMutationsTest {
             .column("last_name")
             .type(Type.string())
             .max()
+            .endColumn()
+            .column("full_name")
+            .type(Type.string())
+            .max()
+            .generatedAs("CONCAT(first_name, ' ', last_name)")
+            .stored()
             .endColumn()
             .primaryKey()
             .asc("id")
@@ -199,10 +206,12 @@ public class AvroTableFileAsMutationsTest {
     user1.put("id", 123L);
     user1.put("first_name", "John");
     user1.put("last_name", "Smith");
+    user1.put("full_name", "John Smith");
     GenericRecord user2 = new GenericData.Record(usersSchema);
     user2.put("id", 456L);
     user2.put("first_name", "Jane");
     user2.put("last_name", "Doe");
+    user2.put("full_name", "Jane Doe");
 
     File file = tmpFolder.newFile("users.avro");
     DatumWriter<GenericRecord> datumWriter = new GenericDatumWriter<>(usersSchema);
