@@ -19,7 +19,6 @@ package com.google.cloud.teleport.templates;
 
 import com.google.api.services.bigquery.model.TableRow;
 import com.google.common.annotations.VisibleForTesting;
-import com.google.gson.JsonObject;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -43,6 +42,7 @@ import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.options.Validation.Required;
 import org.apache.beam.sdk.values.ValueInSingleWindow;
 import org.apache.commons.io.FileUtils;
+import org.json.JSONObject;
 
 /**
  * The {@link PubsubToBigQueryDynamicDestinations} is a streaming pipeline which dynamically routes
@@ -209,8 +209,8 @@ public class PubsubToBigQueryDynamicDestinations {
       String outputProject,
       String outputDataset) {
     PubsubMessage message = value.getValue();
-    byte[] bytes = message.getPayload();
-    JsonObject json = new JsonObject(bytes);
+    String s = new String(message.getPayload(), StandardCharsets.UTF_8);
+    JSONObject json = new JSONObject(s);
     String schemaId = json.get("schemaId");
     String env = json.get("env");
 
