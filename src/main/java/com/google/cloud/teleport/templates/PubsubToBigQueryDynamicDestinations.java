@@ -19,6 +19,8 @@ package com.google.cloud.teleport.templates;
 
 import com.google.api.services.bigquery.model.TableRow;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.gson.JsonObject;
+
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
@@ -207,14 +209,19 @@ public class PubsubToBigQueryDynamicDestinations {
       String outputProject,
       String outputDataset) {
     PubsubMessage message = value.getValue();
+    byte[] bytes = message.getPayload();
+    JsonObject json = new JsonObject(bytes);
+    String schemaId = json.get("schemaId");
+    String env = json.get("env");
+
 
     TableDestination destination;
-    if (message != null && message.getAttributeMap().get("schemaId") != null && message.getAttributeMap().get("env") != null) {
+    if (schemaId != null && env != null) {
       destination =
           new TableDestination(
               String.format(
                   "%s:%s.customer_bulk_events_%s_%s",
-                  outputProject, outputDataset, message.getAttributeMap().get("schemaId"), message.getAttributeMap().get("env")),
+                  outputProject, outputDataset, schemaId, env),
               null);
     } else {
       throw new RuntimeException(
