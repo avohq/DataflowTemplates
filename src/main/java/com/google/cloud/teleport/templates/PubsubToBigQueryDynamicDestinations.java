@@ -71,7 +71,6 @@ import org.apache.beam.sdk.values.ValueInSingleWindow;
  * --tempLocation=${PIPELINE_FOLDER}/temp \
  * --runner=${RUNNER} \
  * --subscription=SUBSCRIPTION \
- * --tableNameAttr=ATTRIBUTE_NAME \
  * --outputTableProject=PROJECT \
  * --outputTableDataset=DATASET"
  * </pre>
@@ -89,13 +88,6 @@ public class PubsubToBigQueryDynamicDestinations {
     String getSubscription();
 
     void setSubscription(String value);
-
-    @Description(
-        "The name of the attribute which will contain the table name to route the message to.")
-    @Required
-    String getTableNameAttr();
-
-    void setTableNameAttr(String value);
 
     @Description(
         "The name of the attribute which will contain the table name to route the message to.")
@@ -141,7 +133,6 @@ public class PubsubToBigQueryDynamicDestinations {
     Pipeline pipeline = Pipeline.create(options);
 
     // Retrieve non-serializable parameters
-    String tableNameAttr = options.getTableNameAttr();
     String outputTableProject = options.getOutputTableProject();
     String outputTableDataset = options.getOutputTableDataset();
 
@@ -157,8 +148,8 @@ public class PubsubToBigQueryDynamicDestinations {
                     input ->
                         getTableDestination(
                             input,
-                            tableNameAttr,
-                            outputTableProject))
+                            outputTableProject,
+                            outputTableDataset))
                 .withFormatFunction(
                     (PubsubMessage msg) -> convertJsonToTableRow(new String(msg.getPayload())))
                 .withCreateDisposition(CreateDisposition.CREATE_NEVER)
@@ -168,6 +159,7 @@ public class PubsubToBigQueryDynamicDestinations {
   }
 
   /**
+   * OUTDATED DESCRIPTION
    * Retrieves the {@link TableDestination} for the {@link PubsubMessage} by extracting and
    * formatting the value of the {@code tableNameAttr} attribute. If the message is null, a {@link
    * RuntimeException} will be thrown because the message is unable to be routed.
