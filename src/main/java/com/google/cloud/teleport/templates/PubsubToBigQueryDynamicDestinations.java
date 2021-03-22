@@ -132,7 +132,14 @@ public class PubsubToBigQueryDynamicDestinations {
 
 
   private static String parseJsonSchema(String path) {
-    return FileUtils.readFileToString(new File(path), StandardCharsets.UTF_8);
+    String json = null;
+    try {
+      json = FileUtils.readFileToString(new File(path), StandardCharsets.UTF_8);
+    } catch (IOException e) {
+      throw new RuntimeException("Failed to read json schema: " + json, e);
+    }
+
+    return json;
   }
 
   /**
