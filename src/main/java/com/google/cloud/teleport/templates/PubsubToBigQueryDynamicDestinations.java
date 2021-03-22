@@ -29,6 +29,7 @@ import org.apache.beam.sdk.coders.Coder.Context;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO.Write.CreateDisposition;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO.Write.WriteDisposition;
+import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO.Write.Method;
 import org.apache.beam.sdk.io.gcp.bigquery.TableDestination;
 import org.apache.beam.sdk.io.gcp.bigquery.TableRowJsonCoder;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubIO;
@@ -73,6 +74,7 @@ import org.apache.beam.sdk.values.ValueInSingleWindow;
  * --subscription=SUBSCRIPTION \
  * --outputTableProject=PROJECT \
  * --outputTableDataset=DATASET"
+ * --jsonSchema="../monorepo/infrastructure/inspector-dynamic-dataflow-job/bulk_schema.json"
  * </pre>
  */
 public class PubsubToBigQueryDynamicDestinations {
@@ -102,6 +104,14 @@ public class PubsubToBigQueryDynamicDestinations {
     String getOutputTableDataset();
 
     void setOutputTableDataset(String value);
+
+    @Description(
+      "The path to Json File containing the schema"
+    )
+    @Required
+    String getJsonSchema();
+
+    void setJsonSchema(String value);
   }
 
   /**
@@ -116,6 +126,11 @@ public class PubsubToBigQueryDynamicDestinations {
     Options options = PipelineOptionsFactory.fromArgs(args).as(Options.class);
 
     run(options);
+  }
+
+
+  private static String parseJsonSchema(String path) {
+    return FileUtils.readFileToString(new File(path), StandardCharsets.UTF_8);
   }
 
   /**
@@ -136,6 +151,11 @@ public class PubsubToBigQueryDynamicDestinations {
     String outputTableProject = options.getOutputTableProject();
     String outputTableDataset = options.getOutputTableDataset();
 
+    String jsonSchemaPath = options.getJsonSchema();
+
+    String jsonSchema = parseJsonSchema(jsonSchemaPath);
+
+
     // Build & execute pipeline
     pipeline
         .apply(
@@ -152,6 +172,8 @@ public class PubsubToBigQueryDynamicDestinations {
                             outputTableDataset))
                 .withFormatFunction(
                     (PubsubMessage msg) -> convertJsonToTableRow(new String(msg.getPayload())))
+                .withJsonSchema(jsonSchema)
+                .withMethod(Method.STREAMING_INSERTS)
                 .withCreateDisposition(CreateDisposition.CREATE_IF_NEEDED)
                 .withWriteDisposition(WriteDisposition.WRITE_APPEND));
 
