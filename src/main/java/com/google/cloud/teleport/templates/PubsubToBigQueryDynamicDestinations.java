@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-package com.google.cloud.pso.pipeline;
+// package com.google.cloud.pso.pipeline;
+package com.google.cloud.teleport.templates;
 
 import com.google.api.services.bigquery.model.TableRow;
 import com.google.common.annotations.VisibleForTesting;
@@ -157,8 +158,7 @@ public class PubsubToBigQueryDynamicDestinations {
                         getTableDestination(
                             input,
                             tableNameAttr,
-                            outputTableProject,
-                            outputTableDataset))
+                            outputTableProject))
                 .withFormatFunction(
                     (PubsubMessage msg) -> convertJsonToTableRow(new String(msg.getPayload())))
                 .withCreateDisposition(CreateDisposition.CREATE_NEVER)
