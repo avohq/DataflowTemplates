@@ -152,7 +152,7 @@ public class PubsubToBigQueryDynamicDestinations {
                             outputTableDataset))
                 .withFormatFunction(
                     (PubsubMessage msg) -> convertJsonToTableRow(new String(msg.getPayload())))
-                .withCreateDisposition(CreateDisposition.CREATE_NEVER)
+                .withCreateDisposition(CreateDisposition.CREATE_IF_NEEDED)
                 .withWriteDisposition(WriteDisposition.WRITE_APPEND));
 
     return pipeline.run();
