@@ -211,8 +211,8 @@ public class PubsubToBigQueryDynamicDestinations {
     PubsubMessage message = value.getValue();
     String s = new String(message.getPayload(), StandardCharsets.UTF_8);
     JSONObject json = new JSONObject(s);
-    String schemaId = json.get("schemaId");
-    String env = json.get("env");
+    String schemaId = json.getString("schemaId");
+    String env = json.getString("env");
 
 
     TableDestination destination;
