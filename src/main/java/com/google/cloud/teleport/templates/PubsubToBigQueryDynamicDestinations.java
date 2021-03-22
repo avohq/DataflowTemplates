@@ -173,18 +173,18 @@ public class PubsubToBigQueryDynamicDestinations {
         .apply(
             "WriteToBigQuery",
             BigQueryIO.<PubsubMessage>write()
-                .to(
+                .withFormatFunction(
+                    (PubsubMessage msg) -> convertJsonToTableRow(new String(msg.getPayload())))
+                .withJsonSchema(jsonSchema)
+                .withCreateDisposition(CreateDisposition.CREATE_IF_NEEDED)
+                .withWriteDisposition(WriteDisposition.WRITE_APPEND)
+                .withMethod(Method.STREAMING_INSERTS)
+                 .to(
                     input ->
                         getTableDestination(
                             input,
                             outputTableProject,
-                            outputTableDataset))
-                .withFormatFunction(
-                    (PubsubMessage msg) -> convertJsonToTableRow(new String(msg.getPayload())))
-                .withJsonSchema(jsonSchema)
-                .withMethod(Method.STREAMING_INSERTS)
-                .withCreateDisposition(CreateDisposition.CREATE_IF_NEEDED)
-                .withWriteDisposition(WriteDisposition.WRITE_APPEND));
+                            outputTableDataset)));
 
     return pipeline.run();
   }
@@ -209,7 +209,7 @@ public class PubsubToBigQueryDynamicDestinations {
     PubsubMessage message = value.getValue();
 
     TableDestination destination;
-    if (message != null) {
+    if (message != null && message.getAttributeMap().get("schemaId") != null && message.getAttributeMap().get("env") != null) {
       destination =
           new TableDestination(
               String.format(
@@ -218,7 +218,11 @@ public class PubsubToBigQueryDynamicDestinations {
               null);
     } else {
       throw new RuntimeException(
-          "Cannot retrieve the dynamic table destination of an null message!");
+          String.format("Cannot retrieve the dynamic table destination of an null message: %s", message.toString()));
+      // destination = String.format(
+      //             "%s:%s.customer_bulk_events_unknown",
+      //             outputProject, outputDataset),
+      //         null)
     }
 
     return destination;
