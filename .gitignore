@@ -3,3 +3,7 @@ bin/
 dependency-reduced-pom.xml
 
 .idea
+.classpath
+.factorypath
+.project
+.settings/
