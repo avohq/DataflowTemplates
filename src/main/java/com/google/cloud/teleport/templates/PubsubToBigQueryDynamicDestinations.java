@@ -44,6 +44,7 @@ import org.apache.beam.sdk.options.Description;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.options.Validation.Required;
+import org.apache.beam.sdk.transforms.SerializableFunction;
 import org.apache.beam.sdk.values.ValueInSingleWindow;
 import org.apache.commons.io.FileUtils;
 import org.json.JSONObject;
@@ -220,14 +221,11 @@ public class PubsubToBigQueryDynamicDestinations {
       ValueInSingleWindow<PubsubMessage> value,
       String outputProject,
       String outputDataset) {
+  try {
     PubsubMessage message = value.getValue();
 
-    String s = null;
-    try {
-      s = new String(message.getPayload(), StandardCharsets.UTF_8);
-    } catch (Exception e){
-      throw new RuntimeException("Cannot Serialize schema json");
-    }
+    String s = new String(message.getPayload(), StandardCharsets.UTF_8);
+    
     JSONObject json = new JSONObject(s);
     String schemaId = json.getString("schemaId");
     String env = json.getString("env");
@@ -258,8 +256,10 @@ public class PubsubToBigQueryDynamicDestinations {
       //             outputProject, outputDataset),
       //         null)
     }
-
     return destination;
+  } catch (Exception e){
+    throw new RuntimeException("Cannot Serialize schema json");
+  }
   }
 
   /**
