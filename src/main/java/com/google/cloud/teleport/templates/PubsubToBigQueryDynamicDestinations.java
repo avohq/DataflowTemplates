@@ -221,7 +221,13 @@ public class PubsubToBigQueryDynamicDestinations {
       String outputProject,
       String outputDataset) {
     PubsubMessage message = value.getValue();
-    String s = new String(message.getPayload(), StandardCharsets.UTF_8);
+
+    String s = null;
+    try {
+      s = new String(message.getPayload(), StandardCharsets.UTF_8);
+    } catch (Exception e){
+      throw new RuntimeException("Cannot Serialize schema json");
+    }
     JSONObject json = new JSONObject(s);
     String schemaId = json.getString("schemaId");
     String env = json.getString("env");
