@@ -174,7 +174,7 @@ public class PubsubToBigQueryDynamicDestinations {
     String outputTableDataset = options.getOutputTableDataset();
 
     String jsonSchemaPath = options.getJsonSchema();
-    String jsonPartitioningPath = options.getJsonPartition();
+    // String jsonPartitioningPath = options.getJsonPartition();
 
     String jsonSchema = parseJsonFile(jsonSchemaPath);
     // String jsonPartition = parseJsonFile(jsonPartitioningPath);
