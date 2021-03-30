@@ -19,6 +19,7 @@ package com.google.cloud.teleport.templates;
 
 import com.google.api.services.bigquery.model.TableRow;
 import com.google.api.services.bigquery.model.TimePartitioning;
+import com.google.api.services.bigquery.model.Clustering;
 
 import com.google.common.annotations.VisibleForTesting;
 
@@ -27,6 +28,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.PipelineResult;
 import org.apache.beam.sdk.coders.Coder.Context;
@@ -180,7 +182,6 @@ public class PubsubToBigQueryDynamicDestinations {
                 .withFormatFunction(
                     (PubsubMessage msg) -> convertJsonToTableRow(new String(msg.getPayload())))
                 .withJsonSchema(jsonSchema)
-                .withTimePartitioning(new TimePartitioning().setField("receivedAt").setType("HOUR"))
                 .withCreateDisposition(CreateDisposition.CREATE_IF_NEEDED)
                 .withWriteDisposition(WriteDisposition.WRITE_APPEND)
                 .withMethod(Method.STREAMING_INSERTS)
@@ -225,7 +226,10 @@ public class PubsubToBigQueryDynamicDestinations {
               String.format(
                   "%s:%s.customer_bulk_events_%s_%s",
                   outputProject, outputDataset, schemaId, env),
-              null);
+              null,
+              new TimePartitioning().setField("receivedAt").setType("HOUR"),
+              new Clustering().setFields(Arrays.asList("foldedAt", "eventName"))
+          );
     } else {
       throw new RuntimeException(
           String.format("Cannot retrieve the dynamic table destination of an null message: %s", message.toString()));
