@@ -231,10 +231,10 @@ public class PubsubToBigQueryDynamicDestinations {
               String.format(
                   "%s:%s.customer_bulk_events_%s_%s",
                   outputProject, outputDataset, schemaId, env),
-              null)
+              null);
               
               // new Clustering().setFields(Arrays.asList("foldedAt", "eventName"))
-          );
+          
     } else {
       throw new RuntimeException(
           String.format("Cannot retrieve the dynamic table destination of an null message: %s", message.toString()));
