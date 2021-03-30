@@ -172,7 +172,7 @@ public class PubsubToBigQueryDynamicDestinations {
 
     TimePartitioning timePartitioning = new TimePartitioning();
     timePartitioning.setField("receivedAt");
-    timePartitioning.setType("HOUR");
+    timePartitioning.setType("DAY");
     timePartitioning.setRequirePartitionFilter(true);
 
     // Build & execute pipeline
