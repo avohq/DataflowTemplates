@@ -170,11 +170,6 @@ public class PubsubToBigQueryDynamicDestinations {
 
     String jsonSchema = parseJsonSchema(jsonSchemaPath);
 
-    TimePartitioning timePartitioning = new TimePartitioning();
-    timePartitioning.setField("receivedAt");
-    timePartitioning.setType("DAY");
-    timePartitioning.setRequirePartitionFilter(true);
-
     // Build & execute pipeline
     pipeline
         .apply(
@@ -188,7 +183,6 @@ public class PubsubToBigQueryDynamicDestinations {
                 .withJsonSchema(jsonSchema)
                 .withCreateDisposition(CreateDisposition.CREATE_IF_NEEDED)
                 .withWriteDisposition(WriteDisposition.WRITE_APPEND)
-                .withTimePartitioning(timePartitioning)
                 .withMethod(Method.STREAMING_INSERTS)
                  .to(
                     input ->
@@ -224,6 +218,12 @@ public class PubsubToBigQueryDynamicDestinations {
     String env = json.getString("env");
 
 
+    TimePartitioning timePartitioning = new TimePartitioning();
+    timePartitioning.setField("receivedAt");
+    timePartitioning.setType("DAY");
+    timePartitioning.setRequirePartitionFilter(true);
+
+
     TableDestination destination;
     if (schemaId != null && env != null) {
       destination =
@@ -231,7 +231,7 @@ public class PubsubToBigQueryDynamicDestinations {
               String.format(
                   "%s:%s.customer_bulk_events_%s_%s",
                   outputProject, outputDataset, schemaId, env),
-              null);
+              null, timePartitioning);
               
               // new Clustering().setFields(Arrays.asList("foldedAt", "eventName"))
           
