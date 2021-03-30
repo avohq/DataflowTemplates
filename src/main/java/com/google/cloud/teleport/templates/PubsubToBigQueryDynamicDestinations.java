@@ -227,8 +227,8 @@ public class PubsubToBigQueryDynamicDestinations {
                   "%s:%s.customer_bulk_events_%s_%s",
                   outputProject, outputDataset, schemaId, env),
               null,
-              new TimePartitioning().setField("receivedAt").setType("HOUR"),
-              new Clustering().setFields(Arrays.asList("foldedAt", "eventName"))
+              new TimePartitioning().setField("receivedAt").setType("HOUR")
+              // new Clustering().setFields(Arrays.asList("foldedAt", "eventName"))
           );
     } else {
       throw new RuntimeException(
