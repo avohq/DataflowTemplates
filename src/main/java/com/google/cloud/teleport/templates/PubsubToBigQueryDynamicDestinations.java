@@ -120,6 +120,13 @@ public class PubsubToBigQueryDynamicDestinations {
     String getJsonSchema();
 
     void setJsonSchema(String value);
+
+    // @Description(
+    //   "The path to Json File containing partioning config"
+    // )
+    // String getJsonPartition();
+
+    // void setJsonPartition(String value);
   }
 
   /**
@@ -137,7 +144,7 @@ public class PubsubToBigQueryDynamicDestinations {
   }
 
 
-  private static String parseJsonSchema(String path) {
+  private static String parseJsonFile(String path) {
     String json = null;
     try {
       json = FileUtils.readFileToString(new File(path), StandardCharsets.UTF_8);
@@ -167,8 +174,10 @@ public class PubsubToBigQueryDynamicDestinations {
     String outputTableDataset = options.getOutputTableDataset();
 
     String jsonSchemaPath = options.getJsonSchema();
+    String jsonPartitioningPath = options.getJsonPartition();
 
-    String jsonSchema = parseJsonSchema(jsonSchemaPath);
+    String jsonSchema = parseJsonFile(jsonSchemaPath);
+    // String jsonPartition = parseJsonFile(jsonPartitioningPath);
 
     // Build & execute pipeline
     pipeline
@@ -218,10 +227,10 @@ public class PubsubToBigQueryDynamicDestinations {
     String env = json.getString("env");
 
 
-    TimePartitioning timePartitioning = new TimePartitioning();
-    timePartitioning.setField("receivedAt");
-    timePartitioning.setType("DAY");
-    timePartitioning.setRequirePartitionFilter(true);
+    // TimePartitioning timePartitioning = new TimePartitioning();
+    // timePartitioning.setField("receivedAt");
+    // timePartitioning.setType("DAY");
+    // timePartitioning.setRequirePartitionFilter(true);
 
 
     TableDestination destination;
@@ -231,7 +240,7 @@ public class PubsubToBigQueryDynamicDestinations {
               String.format(
                   "%s:%s.customer_bulk_events_%s_%s",
                   outputProject, outputDataset, schemaId, env),
-              null, timePartitioning);
+              null);
               
               // new Clustering().setFields(Arrays.asList("foldedAt", "eventName"))
           
