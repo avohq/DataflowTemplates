@@ -18,6 +18,8 @@
 package com.google.cloud.teleport.templates;
 
 import com.google.api.services.bigquery.model.TableRow;
+import com.google.api.services.bigquery.model.TimePartitioning;
+
 import com.google.common.annotations.VisibleForTesting;
 
 import java.io.ByteArrayInputStream;
@@ -178,6 +180,7 @@ public class PubsubToBigQueryDynamicDestinations {
                 .withFormatFunction(
                     (PubsubMessage msg) -> convertJsonToTableRow(new String(msg.getPayload())))
                 .withJsonSchema(jsonSchema)
+                .withTimePartitioning(new TimePartitioning().setField("receivedAt").setType("HOUR"))
                 .withCreateDisposition(CreateDisposition.CREATE_IF_NEEDED)
                 .withWriteDisposition(WriteDisposition.WRITE_APPEND)
                 .withMethod(Method.STREAMING_INSERTS)
