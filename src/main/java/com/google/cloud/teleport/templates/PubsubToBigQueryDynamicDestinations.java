@@ -18,6 +18,7 @@
 package com.google.cloud.teleport.templates;
 
 import com.google.api.services.bigquery.model.TableRow;
+import com.google.api.services.bigquery.model.TableSchema;
 import com.google.api.services.bigquery.model.TimePartitioning;
 import com.google.api.services.bigquery.model.Clustering;
 
@@ -29,14 +30,22 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.List;
+
+import javax.annotation.Nullable;
+
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.PipelineResult;
+import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.Coder.Context;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO;
+import org.apache.beam.sdk.io.gcp.bigquery.DynamicDestinations;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO.Write.CreateDisposition;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO.Write.WriteDisposition;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO.Write.Method;
+import org.apache.beam.sdk.io.gcp.bigquery.BigQueryHelpers;
 import org.apache.beam.sdk.io.gcp.bigquery.TableDestination;
+import org.apache.beam.sdk.io.gcp.bigquery.TableDestinationCoderV3;
 import org.apache.beam.sdk.io.gcp.bigquery.TableRowJsonCoder;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubIO;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubMessage;
@@ -44,7 +53,6 @@ import org.apache.beam.sdk.options.Description;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.options.Validation.Required;
-import org.apache.beam.sdk.transforms.SerializableFunction;
 import org.apache.beam.sdk.values.ValueInSingleWindow;
 import org.apache.commons.io.FileUtils;
 import org.json.JSONObject;
@@ -190,16 +198,41 @@ public class PubsubToBigQueryDynamicDestinations {
             BigQueryIO.<PubsubMessage>write()
                 .withFormatFunction(
                     (PubsubMessage msg) -> convertJsonToTableRow(new String(msg.getPayload())))
-                .withJsonSchema(jsonSchema)
                 .withCreateDisposition(CreateDisposition.CREATE_IF_NEEDED)
                 .withWriteDisposition(WriteDisposition.WRITE_APPEND)
                 .withMethod(Method.STREAMING_INSERTS)
-                 .to(
-                    input ->
-                        getTableDestination(
-                            input,
-                            outputTableProject,
-                            outputTableDataset)));
+                  .to(new DynamicDestinations<PubsubMessage, String>() {
+                          public String getDestination(ValueInSingleWindow<PubsubMessage> element) {
+                            PubsubMessage message = element.getValue();
+
+                            String s = new String(message.getPayload(), StandardCharsets.UTF_8);
+
+                            return s;
+                          }
+                          public TableDestination getTable(String json) {
+                            return getTableDestination(json, outputTableProject, outputTableDataset);
+                          }
+
+                          public TableSchema getSchema(String json) {
+                              
+                              return BigQueryHelpers.fromJsonString(jsonSchema, TableSchema.class);
+                          }
+                          // @Override
+                          // public @Nullable Coder<String> getDestinationCoder() {
+
+                          //   return (Coder) TableDestinationCoderV3.of();
+                          // }
+                         
+                        }));
+
+
+                //  .to(
+                //     input ->
+                //         getTableDestination(
+                //             input,
+                //             outputTableProject,
+                //             outputTableDataset))
+                //           );
 
     return pipeline.run();
   }
@@ -218,23 +251,22 @@ public class PubsubToBigQueryDynamicDestinations {
    */
   @VisibleForTesting
    static TableDestination getTableDestination(
-      ValueInSingleWindow<PubsubMessage> value,
+      String value,
       String outputProject,
       String outputDataset) {
   try {
-    PubsubMessage message = value.getValue();
+    // PubsubMessage message = value.getValue();
 
-    String s = new String(message.getPayload(), StandardCharsets.UTF_8);
+    // String s = new String(message.getPayload(), StandardCharsets.UTF_8);
     
-    JSONObject json = new JSONObject(s);
+    JSONObject json = new JSONObject(value);
     String schemaId = json.getString("schemaId");
     String env = json.getString("env");
 
 
-    // TimePartitioning timePartitioning = new TimePartitioning();
-    // timePartitioning.setField("receivedAt");
-    // timePartitioning.setType("DAY");
-    // timePartitioning.setRequirePartitionFilter(true);
+    TimePartitioning timePartitioning = new TimePartitioning().setField("receivedAt");
+    List<String> list = Arrays.asList("foldedAt", "eventName");
+    Clustering clustering = new Clustering().setFields(list);
 
 
     TableDestination destination;
@@ -244,13 +276,13 @@ public class PubsubToBigQueryDynamicDestinations {
               String.format(
                   "%s:%s.customer_bulk_events_%s_%s",
                   outputProject, outputDataset, schemaId, env),
-              null);
+              null, timePartitioning, clustering);
               
               // new Clustering().setFields(Arrays.asList("foldedAt", "eventName"))
           
     } else {
       throw new RuntimeException(
-          String.format("Cannot retrieve the dynamic table destination of an null message: %s", message.toString()));
+          String.format("Cannot retrieve the dynamic table destination of an null message: %s", value.toString()));
       // destination = String.format(
       //             "%s:%s.customer_bulk_events_unknown",
       //             outputProject, outputDataset),
