@@ -36,7 +36,6 @@ import javax.script.Invocable;
 import javax.script.ScriptEngine;
 import javax.script.ScriptEngineManager;
 import javax.script.ScriptException;
-import jdk.nashorn.api.scripting.ScriptObjectMirror;
 import org.apache.beam.sdk.io.FileSystems;
 import org.apache.beam.sdk.io.fs.MatchResult;
 import org.apache.beam.sdk.io.fs.MatchResult.Metadata;
@@ -158,7 +157,7 @@ public abstract class JavascriptTextTransformer {
       }
 
       Object result = getInvocable().invokeFunction(functionName(), data);
-      if (result == null || ScriptObjectMirror.isUndefined(result)) {
+      if (result == null) {
         return null;
 
       } else if (result instanceof String) {
