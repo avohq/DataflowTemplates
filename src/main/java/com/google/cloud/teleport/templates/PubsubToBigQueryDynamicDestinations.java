@@ -200,7 +200,6 @@ public class PubsubToBigQueryDynamicDestinations {
                     (PubsubMessage msg) -> convertJsonToTableRow(new String(msg.getPayload())))
                 .withCreateDisposition(CreateDisposition.CREATE_IF_NEEDED)
                 .withWriteDisposition(WriteDisposition.WRITE_APPEND)
-                .withMethod(Method.STREAMING_INSERTS)
                   .to(new DynamicDestinations<PubsubMessage, String>() {
                           public String getDestination(ValueInSingleWindow<PubsubMessage> element) {
                             PubsubMessage message = element.getValue();
@@ -217,22 +216,7 @@ public class PubsubToBigQueryDynamicDestinations {
                               
                               return BigQueryHelpers.fromJsonString(jsonSchema, TableSchema.class);
                           }
-                          // @Override
-                          // public @Nullable Coder<String> getDestinationCoder() {
-
-                          //   return (Coder) TableDestinationCoderV3.of();
-                          // }
-                         
                         }));
-
-
-                //  .to(
-                //     input ->
-                //         getTableDestination(
-                //             input,
-                //             outputTableProject,
-                //             outputTableDataset))
-                //           );
 
     return pipeline.run();
   }
@@ -255,9 +239,6 @@ public class PubsubToBigQueryDynamicDestinations {
       String outputProject,
       String outputDataset) {
   try {
-    // PubsubMessage message = value.getValue();
-
-    // String s = new String(message.getPayload(), StandardCharsets.UTF_8);
     
     JSONObject json = new JSONObject(value);
     String schemaId = json.getString("schemaId");
